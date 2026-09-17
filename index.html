@@ -198,15 +198,19 @@
       les bâtiments peuvent aussi venir de la <b>BD TOPO® IGN</b> (Licence Ouverte Etalab) —
       hauteurs réelles issues de LIDAR (<code>hauteur</code>), plus fiables que les tags OSM
       souvent absents/estimés. Sélecteur « OSM / IGN » sur la ligne Bâtiments.
-      Bâtiments : <code>roof:shape</code>/<code>roof:height</code> approximés par un toit pyramidal
-      simplifié (pas de vrai toit à deux pans) ; les bâtiments-relations OSM avec cour intérieure
-      sont évidés dans l'aperçu 3D, mais pas dans l'export Blender (.abc).
+      Bâtiments : toits hip/gable/skillion/pyramidal réels (pas une approximation unique) —
+      hip via un champ de hauteur (distance au bord le plus proche), correct sur n'importe quelle
+      forme de contour, pas juste les rectangles. <code>min_height</code>/<code>building:min_level</code>
+      gérés (socles, tours à étages). <code>building:colour</code>/<code>roof:colour</code> appliqués
+      si hex valide. Cours intérieures (relations multipolygon) évidées dans l'aperçu 3D <b>et</b>
+      dans l'export Blender (modifier Boolean par trou).
       Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
     </footer>
   </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
@@ -554,7 +558,16 @@
       if (isNaN(roofHeight) || roofHeight <= 0) roofHeight = 0;
       if (roofHeight >= totalHeight) roofHeight = totalHeight * 0.4;
     }
-    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight };
+
+    // min_height / building:min_level: elevates a building:part above ground (podium, tiered
+    // tower, wing starting above a passage...) — mirrors how blender-osm stacks building:part.
+    var minHeight = 0;
+    if (tags.min_height) minHeight = parseFloat(tags.min_height);
+    else if (tags['building:min_level']) minHeight = parseFloat(tags['building:min_level']) * 3;
+    if (isNaN(minHeight) || minHeight < 0) minHeight = 0;
+    if (minHeight >= totalHeight) minHeight = 0; // guard against bad/contradictory tagging
+
+    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight - minHeight, minHeight: minHeight };
   }
 
   function buildProps(el, tags){
@@ -566,6 +579,7 @@
       props.roof_shape = bh.roofShape;
       props.roof_height_m = bh.roofHeight;
       props.wall_height_m = bh.wallHeight;
+      props.min_height_m = bh.minHeight;
     }
     if (tags.barrier){
       props.wall_height_m = (tags.barrier === 'wall') ? 1.8 : (tags.barrier === 'hedge' ? 1.2 : 1.1);
@@ -738,7 +752,9 @@
     };
   }
 
-  function buildPitchedRoofGeometry(outerPts, wallH, roofH, roofShape){
+  // gabled / skillion: directional roofs, not derivable from a pure distance field — the OABB
+  // (bounding rectangle) gives a robust ridge/slope direction for any footprint shape.
+  function buildOABBRoofGeometry(outerPts, wallH, roofH, roofShape){
     var oabb = computeOABB(outerPts);
     var L = Math.max(oabb.lengthLong, 0.5), W = Math.max(oabb.lengthShort, 0.5);
     var ax = oabb.axisLong, ay = oabb.axisShort, c = oabb.center;
@@ -760,22 +776,12 @@
     if (roofShape === 'skillion'){
       var hi1 = pt(1,1,topY), hi0 = pt(-1,1,topY);
       quad(w00, w10, hi1, hi0);
-    } else if (roofShape === 'gabled'){
+    } else { // gabled
       var r0 = pt(-1,0,topY), r1 = pt(1,0,topY);
       quad(w00, w10, r1, r0);
       quad(r0, r1, w11, w01);
       tri(w10, w11, r1);
       tri(w01, w00, r0);
-    } else {
-      // hipped / pyramidal / default non-flat fallback: ridge collapses to a point when
-      // roofShape is explicitly "pyramidal" (single apex), otherwise its natural L-W length.
-      var ridgeLen = (roofShape === 'pyramidal') ? 0 : Math.max(0, L - W);
-      var hr0 = { x:c.x+ax.x*(-ridgeLen/2), y:topY, z:c.z+ax.z*(-ridgeLen/2) };
-      var hr1 = { x:c.x+ax.x*( ridgeLen/2), y:topY, z:c.z+ax.z*( ridgeLen/2) };
-      quad(w00, w10, hr1, hr0);
-      quad(hr0, hr1, w11, w01);
-      tri(w10, w11, hr1);
-      tri(w01, w00, hr0);
     }
 
     var geometry = new THREE.BufferGeometry();
@@ -784,30 +790,168 @@
     return geometry;
   }
 
+  // pyramidal: forced single apex regardless of footprint shape (per OSM roof:shape semantics) —
+  // a fan of triangles from the centroid, distinct from "hipped" which follows the natural ridge.
+  function buildPyramidalRoofGeometry(outerPts, wallH, roofH){
+    var cx = 0, cz = 0;
+    outerPts.forEach(function(p){ cx += p.x; cz += p.y; });
+    cx /= outerPts.length; cz /= outerPts.length;
+    var positions = [];
+    for (var i=0; i<outerPts.length; i++){
+      var p1 = outerPts[i], p2 = outerPts[(i+1)%outerPts.length];
+      positions.push(p1.x, wallH, p1.y,  p2.x, wallH, p2.y,  cx, wallH+roofH, cz);
+    }
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // hipped (and any other/exotic roof:shape as a generic pitched fallback): general hip roof for
+  // ANY polygon shape (convex or concave — L-shapes, T-shapes...), not just rectangles.
+  // Method: height at any point = tan(pitch) * (distance to the nearest footprint edge) — this is
+  // exactly what a straight-skeleton hip roof is (the medial-axis-driven ridge/valley structure
+  // emerges naturally from this distance field), without implementing full skeleton event
+  // handling (edge/split events for reflex vertices). The footprint is triangulated (earcut) then
+  // each triangle is finely subdivided so ridges/valleys show up as creases in the mesh — an
+  // approximation, but a correct and robust one for any simple polygon.
+  function pointSegDist(px,pz, ax,az, bx,bz){
+    var dx=bx-ax, dz=bz-az;
+    var len2 = dx*dx+dz*dz;
+    var t = len2>1e-12 ? ((px-ax)*dx+(pz-az)*dz)/len2 : 0;
+    t = Math.max(0, Math.min(1,t));
+    var cx=ax+t*dx, cz=az+t*dz;
+    return Math.hypot(px-cx, pz-cz);
+  }
+
+  function minDistToRing(px, pz, ring){
+    var m = Infinity;
+    for (var i=0;i<ring.length;i++){
+      var a = ring[i], b = ring[(i+1)%ring.length];
+      var d = pointSegDist(px,pz,a.x,a.y,b.x,b.y);
+      if (d<m) m=d;
+    }
+    return m;
+  }
+
+  function triangulateFootprint(outerPts){
+    var flat = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    var idx = earcut(flat);
+    var tris = [];
+    for (var i=0;i<idx.length;i+=3){
+      tris.push([outerPts[idx[i]], outerPts[idx[i+1]], outerPts[idx[i+2]]]);
+    }
+    return tris;
+  }
+
+  function buildHipRoofHeightfield(outerPts, wallH, roofH){
+    var tris0 = triangulateFootprint(outerPts);
+    if (!tris0.length) return buildPyramidalRoofGeometry(outerPts, wallH, roofH);
+
+    // two passes: (1) sample raw (unscaled) distance-to-edge at every fine grid point actually
+    // used by the mesh, tracking the true max across them — sampling only vertices/centroids for
+    // this (as a first version of this function did) can miss the real farthest point inside a
+    // triangle, understating the max and making later points overshoot past wallH+roofH;
+    // (2) rescale every stored point by that true max, so the roof reaches exactly wallH+roofH
+    // at its farthest point from any edge, never beyond.
+    var triGrids = [];
+    var trueMax = 1e-6;
+    tris0.forEach(function(t){
+      var e0 = Math.hypot(t[1].x-t[0].x, t[1].y-t[0].y);
+      var e1 = Math.hypot(t[2].x-t[1].x, t[2].y-t[1].y);
+      var e2 = Math.hypot(t[0].x-t[2].x, t[0].y-t[2].y);
+      var n = Math.max(1, Math.min(8, Math.round(Math.max(e0,e1,e2) / 1.5))); // ~1.5m facets, capped
+
+      var grid = [];
+      for (var i=0;i<=n;i++){
+        grid[i] = [];
+        for (var j=0;j<=n-i;j++){
+          var u=i/n, v=j/n, w=1-u-v;
+          var x = w*t[0].x + u*t[1].x + v*t[2].x;
+          var y = w*t[0].y + u*t[1].y + v*t[2].y;
+          var d = minDistToRing(x, y, outerPts);
+          if (d > trueMax) trueMax = d;
+          grid[i][j] = { x:x, y:y, d:d };
+        }
+      }
+      triGrids.push({ n:n, grid:grid });
+    });
+
+    var scale = roofH / trueMax;
+    var positions = [];
+    triGrids.forEach(function(tg){
+      var n = tg.n, grid = tg.grid;
+      for (var ii=0; ii<n; ii++){
+        for (var jj=0; jj<n-ii; jj++){
+          var a = grid[ii][jj], b = grid[ii+1][jj], c = grid[ii][jj+1];
+          var ah = wallH+scale*a.d, bh = wallH+scale*b.d, ch = wallH+scale*c.d;
+          positions.push(a.x,ah,a.y, b.x,bh,b.y, c.x,ch,c.y);
+          if (jj < n-ii-1){
+            var d2 = grid[ii+1][jj+1];
+            var dh = wallH+scale*d2.d;
+            positions.push(b.x,bh,b.y, d2.x,dh,d2.y, c.x,ch,c.y);
+          }
+        }
+      }
+    });
+
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // OSM colour tags are almost always #rrggbb / #rgb — only trust that shape, anything else
+  // (a CSS colour name, a typo) falls back to the layer default rather than guessing.
+  function parseOsmHexColor(val, fallback){
+    if (!val) return fallback;
+    var v = val.trim();
+    if (/^#?[0-9a-fA-F]{6}$/.test(v) || /^#?[0-9a-fA-F]{3}$/.test(v)){
+      if (v[0] !== '#') v = '#' + v;
+      try { return new THREE.Color(v); } catch(e){ return fallback; }
+    }
+    return fallback;
+  }
+
   function buildBuildingMesh(geom, props, mat, center){
     var built = ringsToShape(geom.coordinates, center);
     if (!built) return null;
 
     var totalH = props.height_est_m || 9;
     var roofH = props.roof_height_m || 0;
+    var minH = props.min_height_m || 0;
     var wallH = props.wall_height_m;
-    if (!wallH || wallH < 0.3) wallH = totalH - roofH;
+    if (!wallH || wallH < 0.3) wallH = totalH - roofH - minH;
     if (wallH < 0.3) wallH = totalH;
+
+    var wallColor = parseOsmHexColor(props['building:colour'], mat.color);
+    var wallMat = (wallColor === mat.color) ? mat : new THREE.MeshStandardMaterial({ color: wallColor, roughness:0.85, metalness:0.05 });
 
     var group = new THREE.Group();
     var wallGeom = new THREE.ExtrudeGeometry(built.shape, { depth: wallH, bevelEnabled:false });
     wallGeom.rotateX(-Math.PI/2);
-    group.add(new THREE.Mesh(wallGeom, mat));
+    group.add(new THREE.Mesh(wallGeom, wallMat));
 
     if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
-      // OABB-derived hip/gable/skillion/pyramidal roof — mansard/gambrel/dome/other exotic
-      // roof:shape values fall back to the hip-roof branch (closest generic pitched approximation).
-      var roofGeom = buildPitchedRoofGeometry(built.outerPts, wallH, roofH, props.roof_shape);
-      var roofMat = new THREE.MeshStandardMaterial({
-        color: mat.color.clone().multiplyScalar(0.75), roughness:0.9, side:THREE.DoubleSide
-      });
+      var shape2 = props.roof_shape;
+      var roofGeom;
+      if (shape2 === 'gabled' || shape2 === 'skillion'){
+        roofGeom = buildOABBRoofGeometry(built.outerPts, wallH, roofH, shape2);
+      } else if (shape2 === 'pyramidal'){
+        roofGeom = buildPyramidalRoofGeometry(built.outerPts, wallH, roofH);
+      } else {
+        // hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic pitched fallback
+        roofGeom = buildHipRoofHeightfield(built.outerPts, wallH, roofH);
+      }
+      var roofColor = parseOsmHexColor(props['roof:colour'], wallColor.clone().multiplyScalar(0.75));
+      var roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness:0.9, side:THREE.DoubleSide });
       group.add(new THREE.Mesh(roofGeom, roofMat));
     }
+
+    // min_height / building:min_level: elevate the whole part (walls+roof) above the ground —
+    // podiums, tiered towers, wings starting above a passage.
+    if (minH > 0.01) group.position.y = minH;
     return group;
   }
 
@@ -1005,6 +1149,12 @@
     var center = fetchBounds.getCenter();
     var exportScene = new THREE.Scene();
     exportScene.add(buildGeometryGroup(center));
+    // OBJExporter reads mesh.matrixWorld directly and never updates it itself — without this,
+    // every position/rotation set via .position/.rotation (roads, walls, lamps, trees, furniture,
+    // and now min_height-offset building parts) is silently dropped from the export, since fresh
+    // objects start with an identity matrixWorld until something updates it (normally the render
+    // loop does this every frame; we never render exportScene, so it has to be forced here).
+    exportScene.updateMatrixWorld(true);
     var exporter = new THREE.OBJExporter();
     var objText = exporter.parse(exportScene);
     var blob = new Blob([objText], { type:'text/plain' });
@@ -1040,12 +1190,13 @@
 "#  2) Dans Blender : onglet \"Scripting\" -> Open -> ce fichier -> Run Script (Alt+P).",
 "#  3) zone.abc est ecrit a cote de ce script.",
 "#",
-"# Limitation connue : les cours interieures des batiments (trous / multipolygones avec \"inner\")",
-"# ne sont pas evidees ici (l'apercu web les gere visuellement, pas cet export) -- seul le contour",
-"# exterieur est extrude. A ameliorer plus tard si besoin (necessite un modifier Boolean par trou).",
-"# Toits (roof:shape != flat) : construits depuis le rectangle englobant oriente (OABB) du contour,",
-"# exact pour un batiment rectangulaire, approximation raisonnable sinon -- meme methode que",
-"# l'apercu 3D navigateur, pour rester coherent visuellement entre les deux.",
+"# Toits (roof:shape != flat) : hipped -> heightfield general (triangulation + distance au bord,",
+"# meme methode que l'apercu 3D navigateur), gabled/skillion -> rectangle englobant oriente (OABB),",
+"# pyramidal -> eventail depuis le centroide. Coherent avec le rendu web.",
+"# min_height / building:min_level : elevent le mur au-dessus du sol (socle, tour a etages...).",
+"# Trous (cours interieures, relations multipolygon avec role \"inner\") : evides par un modifier",
+"# Boolean DIFFERENCE, un objet-decoupe temporaire par trou, supprime apres application.",
+"# Couleurs : building:colour / roof:colour appliquees si elles sont un hex #rrggbb/#rgb valide.",
 "",
 "import bpy, bmesh, json, math, os",
 "",
@@ -1122,8 +1273,43 @@
 "    collection.objects.link(obj)",
 "",
 "",
-"# --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented",
-"# bounding box (OABB) -- same method as the browser 3D preview, kept in sync for consistency.",
+"def hex_to_rgba(hexstr, fallback):",
+"    if not hexstr:",
+"        return fallback",
+"    h = hexstr.strip().lstrip(\"#\")",
+"    if len(h) == 3:",
+"        h = \"\".join(c * 2 for c in h)",
+"    if len(h) != 6:",
+"        return fallback",
+"    try:",
+"        r = int(h[0:2], 16) / 255.0",
+"        g = int(h[2:4], 16) / 255.0",
+"        b = int(h[4:6], 16) / 255.0",
+"        return (r, g, b, 1.0)",
+"    except ValueError:",
+"        return fallback",
+"",
+"",
+"_material_cache = {}",
+"",
+"",
+"def get_material(rgba):",
+"    key = tuple(round(c, 4) for c in rgba)",
+"    mat = _material_cache.get(key)",
+"    if mat is None:",
+"        mat = bpy.data.materials.new(\"mat_%02x%02x%02x\" % (int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255)))",
+"        mat.diffuse_color = rgba",
+"        _material_cache[key] = mat",
+"    return mat",
+"",
+"",
+"def assign_material(obj, rgba):",
+"    obj.data.materials.append(get_material(rgba))",
+"",
+"",
+"# --- analytic pitched roofs: OABB-based (gabled/skillion/pyramidal) and general heightfield",
+"# (hipped + any other roof:shape as a generic pitched fallback) -- same methods as the browser",
+"# 3D preview, kept in sync so the .abc export matches it visually.",
 "",
 "def normalize2(v):",
 "    length = math.hypot(v[0], v[1])",
@@ -1190,40 +1376,30 @@
 "    }",
 "",
 "",
-"def build_pitched_roof(name, outer_pts, wall_h, roof_h, roof_shape, collection):",
+"def build_oabb_roof(name, outer_pts, wall_top, roof_h, roof_shape, collection, roof_rgba):",
 "    oabb = compute_oabb(outer_pts)",
 "    L = max(oabb[\"length_long\"], 0.5)",
 "    W = max(oabb[\"length_short\"], 0.5)",
 "    ax, ay, c = oabb[\"axis_long\"], oabb[\"axis_short\"], oabb[\"center\"]",
-"    top_y = wall_h + roof_h",
+"    top_z = wall_top + roof_h",
 "",
-"    def pt(s_long, s_short, y):",
+"    def pt(s_long, s_short, z):",
 "        return (c[0] + ax[0] * (s_long * L / 2) + ay[0] * (s_short * W / 2),",
 "                c[1] + ax[1] * (s_long * L / 2) + ay[1] * (s_short * W / 2),",
-"                y)",
+"                z)",
 "",
-"    w00, w10, w11, w01 = pt(-1, -1, wall_h), pt(1, -1, wall_h), pt(1, 1, wall_h), pt(-1, 1, wall_h)",
+"    w00, w10, w11, w01 = pt(-1, -1, wall_top), pt(1, -1, wall_top), pt(1, 1, wall_top), pt(-1, 1, wall_top)",
 "",
 "    faces_verts = []",
 "    if roof_shape == \"skillion\":",
-"        hi1, hi0 = pt(1, 1, top_y), pt(-1, 1, top_y)",
+"        hi1, hi0 = pt(1, 1, top_z), pt(-1, 1, top_z)",
 "        faces_verts.append((w00, w10, hi1, hi0))",
-"    elif roof_shape == \"gabled\":",
-"        r0, r1 = pt(-1, 0, top_y), pt(1, 0, top_y)",
+"    else:  # gabled",
+"        r0, r1 = pt(-1, 0, top_z), pt(1, 0, top_z)",
 "        faces_verts.append((w00, w10, r1, r0))",
 "        faces_verts.append((r0, r1, w11, w01))",
 "        faces_verts.append((w10, w11, r1))",
 "        faces_verts.append((w01, w00, r0))",
-"    else:",
-"        # hipped / pyramidal / other non-flat roof:shape values (mansard, gambrel, dome...) fall",
-"        # back to this hip-roof branch as the closest generic pitched approximation.",
-"        ridge_len = 0.0 if roof_shape == \"pyramidal\" else max(0.0, L - W)",
-"        hr0 = (c[0] + ax[0] * (-ridge_len / 2), c[1] + ax[1] * (-ridge_len / 2), top_y)",
-"        hr1 = (c[0] + ax[0] * (ridge_len / 2), c[1] + ax[1] * (ridge_len / 2), top_y)",
-"        faces_verts.append((w00, w10, hr1, hr0))",
-"        faces_verts.append((hr0, hr1, w11, w01))",
-"        faces_verts.append((w10, w11, hr1))",
-"        faces_verts.append((w01, w00, hr0))",
 "",
 "    mesh = bpy.data.meshes.new(name + \"_roof\")",
 "    bm = bmesh.new()",
@@ -1237,25 +1413,144 @@
 "    bm.to_mesh(mesh)",
 "    bm.free()",
 "    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
 "    collection.objects.link(obj)",
 "",
 "",
+"def build_pyramidal_roof(name, outer_pts, wall_top, roof_h, collection, roof_rgba):",
+"    cx = sum(p[0] for p in outer_pts) / len(outer_pts)",
+"    cz = sum(p[1] for p in outer_pts) / len(outer_pts)",
+"    apex = (cx, cz, wall_top + roof_h)",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    apex_v = bm.verts.new(apex)",
+"    ring_v = [bm.verts.new((x, z, wall_top)) for (x, z) in outer_pts]",
+"    n = len(ring_v)",
+"    for i in range(n):",
+"        try:",
+"            bm.faces.new((ring_v[i], ring_v[(i + 1) % n], apex_v))",
+"        except ValueError:",
+"            pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def point_seg_dist(px, pz, ax, az, bx, bz):",
+"    dx, dz = bx - ax, bz - az",
+"    len2 = dx * dx + dz * dz",
+"    t = ((px - ax) * dx + (pz - az) * dz) / len2 if len2 > 1e-12 else 0.0",
+"    t = max(0.0, min(1.0, t))",
+"    cx, cz = ax + t * dx, az + t * dz",
+"    return math.hypot(px - cx, pz - cz)",
+"",
+"",
+"def min_dist_to_ring(px, pz, ring):",
+"    n = len(ring)",
+"    return min(point_seg_dist(px, pz, ring[i][0], ring[i][1], ring[(i + 1) % n][0], ring[(i + 1) % n][1])",
+"               for i in range(n))",
+"",
+"",
+"def build_hip_roof_heightfield(name, outer_pts, wall_top, roof_h, collection, roof_rgba):",
+"    # flat n-gon at wall_top, triangulated + subdivided by Blender's own robust bmesh ops (no",
+"    # hand-rolled triangulation needed here, unlike the browser side which uses earcut) --",
+"    # then each vertex is raised by (roof_h / true_max) * distance-to-nearest-footprint-edge,",
+"    # same two-pass normalization as the browser version: sample raw distances first, find the",
+"    # true farthest point actually present in the mesh, THEN scale -- scaling against only a",
+"    # coarse sample (footprint vertices/triangle centroids) can understate the true max and let",
+"    # later, finer points overshoot past wall_top + roof_h.",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, wall_top)) for (x, z) in outer_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"",
+"    bmesh.ops.triangulate(bm, faces=bm.faces[:])",
+"",
+"    max_dim = max(",
+"        max(p[0] for p in outer_pts) - min(p[0] for p in outer_pts),",
+"        max(p[1] for p in outer_pts) - min(p[1] for p in outer_pts),",
+"    )",
+"    cuts = max(0, min(5, round(max_dim / 3.0)))  # ~1.5-3m facets after subdivision, capped",
+"    if cuts > 0:",
+"        bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)",
+"",
+"    raw = {}",
+"    true_max = 1e-6",
+"    for v in bm.verts:",
+"        d = min_dist_to_ring(v.co.x, v.co.y, outer_pts)",
+"        raw[v.index] = d",
+"        if d > true_max:",
+"            true_max = d",
+"    scale = roof_h / true_max",
+"    for v in bm.verts:",
+"        v.co.z = wall_top + scale * raw[v.index]",
+"",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def cut_hole(obj, hole_pts, z_bottom, z_top, index):",
+"    mesh = bpy.data.meshes.new(obj.name + \"_cutter%d\" % index)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, z_bottom)) for (x, z) in hole_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    ret = bmesh.ops.extrude_face_region(bm, geom=[face])",
+"    extruded = [v for v in ret[\"geom\"] if isinstance(v, bmesh.types.BMVert)]",
+"    bmesh.ops.translate(bm, verts=extruded, vec=(0, 0, z_top - z_bottom))",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    cutter = bpy.data.objects.new(obj.name + \"_cutter%d\" % index, mesh)",
+"    bpy.context.scene.collection.objects.link(cutter)",
+"",
+"    mod = obj.modifiers.new(name=\"hole%d\" % index, type=\"BOOLEAN\")",
+"    mod.operation = \"DIFFERENCE\"",
+"    mod.object = cutter",
+"    bpy.context.view_layer.objects.active = obj",
+"    try:",
+"        bpy.ops.object.modifier_apply(modifier=mod.name)",
+"    except RuntimeError:",
+"        obj.modifiers.remove(mod)",
+"    bpy.data.objects.remove(cutter, do_unlink=True)",
+"",
+"",
 "def add_building(name, feature, collection):",
-"    outer_pts = ring_to_local(feature[\"geometry\"][\"coordinates\"][0])",
+"    coords_list = feature[\"geometry\"][\"coordinates\"]",
+"    outer_pts = ring_to_local(coords_list[0])",
 "    if len(outer_pts) < 3:",
 "        return",
+"    hole_rings = [ring_to_local(h) for h in coords_list[1:]]",
+"    hole_rings = [h for h in hole_rings if len(h) >= 3]",
 "",
 "    props = feature[\"properties\"]",
 "    total_h = props.get(\"height_est_m\", 9.0) or 9.0",
 "    roof_h = props.get(\"roof_height_m\", 0.0) or 0.0",
 "    roof_shape = props.get(\"roof_shape\", \"flat\")",
-"    wall_h = props.get(\"wall_height_m\", total_h - roof_h)",
+"    min_h = props.get(\"min_height_m\", 0.0) or 0.0",
+"    wall_h = props.get(\"wall_height_m\", total_h - roof_h - min_h)",
 "    if not wall_h or wall_h < 0.3:",
-"        wall_h = total_h",
+"        wall_h = total_h - min_h",
+"    wall_top = min_h + wall_h  # absolute elevation where the roof starts",
+"",
+"    wall_rgba = hex_to_rgba(props.get(\"building:colour\"), (0.55, 0.57, 0.62, 1.0))",
 "",
 "    mesh = bpy.data.meshes.new(name)",
 "    bm = bmesh.new()",
-"    verts = [bm.verts.new((x, z, 0.0)) for (x, z) in outer_pts]",
+"    verts = [bm.verts.new((x, z, min_h)) for (x, z) in outer_pts]",
 "    try:",
 "        face = bm.faces.new(verts)",
 "    except ValueError:",
@@ -1267,10 +1562,21 @@
 "    bm.to_mesh(mesh)",
 "    bm.free()",
 "    obj = bpy.data.objects.new(name, mesh)",
+"    assign_material(obj, wall_rgba)",
 "    collection.objects.link(obj)",
 "",
+"    for k, hole in enumerate(hole_rings):",
+"        cut_hole(obj, hole, min_h - 5.0, min_h + wall_h + roof_h + 5.0, k)",
+"",
 "    if roof_h > 0.2 and roof_shape and roof_shape != \"flat\":",
-"        build_pitched_roof(name, outer_pts, wall_h, roof_h, roof_shape, collection)",
+"        roof_rgba = hex_to_rgba(props.get(\"roof:colour\"), tuple(c * 0.75 for c in wall_rgba[:3]) + (1.0,))",
+"        if roof_shape == \"skillion\" or roof_shape == \"gabled\":",
+"            build_oabb_roof(name, outer_pts, wall_top, roof_h, roof_shape, collection, roof_rgba)",
+"        elif roof_shape == \"pyramidal\":",
+"            build_pyramidal_roof(name, outer_pts, wall_top, roof_h, collection, roof_rgba)",
+"        else:",
+"            # hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic fallback",
+"            build_hip_roof_heightfield(name, outer_pts, wall_top, roof_h, collection, roof_rgba)",
 "",
 "",
 "def add_flat_area(name, feature, z, collection):",
