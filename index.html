@@ -69,6 +69,10 @@
   .layer-dl{
     font-size:11px; padding:5px 8px; border-radius:5px;
   }
+  .src-select{
+    font-size:10.5px; background:var(--panel2); color:var(--text); border:1px solid var(--border);
+    border-radius:5px; padding:3px 4px; flex:none; max-width:96px;
+  }
 
   #zoneInfo{
     font-size:12px; color:var(--muted); line-height:1.6; margin-top:2px;
@@ -145,7 +149,7 @@
   <div id="panel">
     <header class="brand">
       <h1>Extracteur géométries OSM</h1>
-      <p>Sélectionne une zone → récupère bâtiments, routes, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D.</p>
+      <p>Sélectionne une zone → récupère bâtiments (OSM ou IGN), routes, murs, eau, végétation, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D.</p>
     </header>
 
     <div class="section">
@@ -190,10 +194,14 @@
     </div>
 
     <footer class="note">
-      Source : OpenStreetMap (Overpass API), licence ODbL. Les hauteurs (<code>height_est_m</code>)
-      sont estimées depuis le tag <code>height</code> ou <code>building:levels</code>×3m à défaut —
-      à vérifier sur les bâtiments qui comptent pour un match caméra précis.
-      Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis du serveur public Overpass.
+      Sources : OpenStreetMap (Overpass API, licence ODbL) pour toutes les couches ; en France,
+      les bâtiments peuvent aussi venir de la <b>BD TOPO® IGN</b> (Licence Ouverte Etalab) —
+      hauteurs réelles issues de LIDAR (<code>hauteur</code>), plus fiables que les tags OSM
+      souvent absents/estimés. Sélecteur « OSM / IGN » sur la ligne Bâtiments.
+      Bâtiments : <code>roof:shape</code>/<code>roof:height</code> approximés par un toit pyramidal
+      simplifié (pas de vrai toit à deux pans) ; les bâtiments-relations OSM avec cour intérieure
+      sont évidés dans l'aperçu 3D, mais pas dans l'export Blender (.abc).
+      Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
     </footer>
   </div>
 </div>
@@ -207,12 +215,17 @@
   "use strict";
 
   var LAYERS = {
-    buildings:  { label:"Bâtiments",       color:"#4da3ff", filter:function(t){ return !!t.building; } },
-    roads:      { label:"Routes / voies",  color:"#ffd23f", filter:function(t){ return !!t.highway && t.highway!=="street_lamp"; } },
+    buildings:  { label:"Bâtiments",       color:"#4da3ff", filter:function(t){ return !!t.building || !!t['building:part']; } },
+    roads:      { label:"Routes / voies",  color:"#ffd23f", filter:function(t){ return !!t.highway && t.highway!=="street_lamp" && t.highway!=="traffic_signals" && t.highway!=="bus_stop"; } },
+    walls:      { label:"Murs / clôtures", color:"#9aa0ab", filter:function(t){ return !!t.barrier; } },
+    water:      { label:"Eau",             color:"#3fa9dc", filter:function(t){ return t.natural==="water" || !!t.waterway; } },
+    vegetation: { label:"Végétation",      color:"#2f8f4e", filter:function(t){ return ["grass","forest","meadow"].indexOf(t.landuse)!==-1 || t.natural==="wood"; } },
     lamps:      { label:"Lampadaires",     color:"#ff8a3d", filter:function(t){ return t.highway==="street_lamp"; } },
     trees:      { label:"Arbres",          color:"#3ddc84", filter:function(t){ return t.natural==="tree"; } },
-    furniture:  { label:"Mobilier urbain", color:"#c792ea", filter:function(t){ return ["bench","waste_basket","drinking_water","bicycle_parking"].indexOf(t.amenity)!==-1; } }
+    furniture:  { label:"Mobilier urbain", color:"#c792ea", filter:function(t){ return ["bench","waste_basket","drinking_water","bicycle_parking"].indexOf(t.amenity)!==-1 || t.highway==="traffic_signals" || t.highway==="bus_stop"; } }
   };
+
+  var IGN_WFS = 'https://data.geopf.fr/wfs/ows';
 
   var map = L.map('map', { zoomControl:true }).setView([48.8566, 2.3522], 15); // Paris par défaut
   // tile.openstreetmap.org bloque les requêtes sans Referer correct, et CARTO exige désormais
@@ -245,12 +258,19 @@
     var def = LAYERS[key];
     var row = document.createElement('div');
     row.className = 'layer-row';
+    var sourceHtml = (key === 'buildings')
+      ? '<select id="buildingSource" class="src-select" title="Source des bâtiments">' +
+          '<option value="osm" selected>OSM</option>' +
+          '<option value="ign">IGN (France)</option>' +
+        '</select>'
+      : '';
     row.innerHTML =
       '<label>' +
         '<input type="checkbox" id="chk_'+key+'" checked>' +
         '<span class="swatch" style="background:'+def.color+'"></span>' +
         '<span>'+def.label+'</span>' +
       '</label>' +
+      sourceHtml +
       '<span class="layer-count" id="count_'+key+'">–</span>' +
       '<button class="layer-dl" id="dl_'+key+'" style="display:none">↓</button>';
     layerListEl.appendChild(row);
@@ -351,26 +371,84 @@
       .catch(function(err){ setStatus('Erreur de recherche : ' + err.message, true); });
   }
 
+  // --- IGN BD TOPO (France) : hauteurs reelles (LIDAR), en alternative a OSM pour les batiments ---
+  function fetchIGNBuildings(bounds){
+    var bboxStr = bounds.getSouthWest().lat + ',' + bounds.getSouthWest().lng + ',' +
+                  bounds.getNorthEast().lat + ',' + bounds.getNorthEast().lng;
+    var url = IGN_WFS + '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAME=BDTOPO_V3:batiment' +
+      '&BBOX=' + encodeURIComponent(bboxStr) + '&OUTPUTFORMAT=application/json&COUNT=2000';
+    return fetch(url).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (IGN WFS)');
+      return r.json();
+    }).then(function(data){
+      var features = [];
+      (data.features || []).forEach(function(f){
+        var hVal = f.properties && f.properties.hauteur;
+        var h = (typeof hVal === 'number' && hVal > 0.3) ? hVal : 9;
+        var g = f.geometry;
+        if (!g) return;
+        var polys = (g.type === 'MultiPolygon') ? g.coordinates : [g.coordinates];
+        polys.forEach(function(poly, idx){
+          if (!poly.length) return;
+          var rings = poly.map(function(ring){ return ring.map(function(c){ return [c[0], c[1]]; }); }); // drop z (sentinel, unreliable)
+          features.push({
+            type:'Feature',
+            geometry:{ type:'Polygon', coordinates: rings },
+            properties:{
+              source:'ign_bdtopo',
+              ign_id: (f.properties && f.properties.cleabs) + (idx ? '_' + idx : ''),
+              nature: f.properties && f.properties.nature,
+              usage: f.properties && f.properties.usage_1,
+              nombre_d_etages: f.properties && f.properties.nombre_d_etages,
+              height_est_m: h,
+              roof_shape:'flat', roof_height_m:0, wall_height_m:h
+            }
+          });
+        });
+      });
+      return { type:'FeatureCollection', features: features };
+    });
+  }
+
   // --- overpass query + fetch ---
   fetchBtn.addEventListener('click', function(){
     if (!currentBounds) return;
     var keys = selectedLayerKeys();
     if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
 
+    var useIGN = keys.indexOf('buildings') !== -1 && document.getElementById('buildingSource').value === 'ign';
+    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && useIGN); });
+
     var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
     var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
 
     var parts = [];
-    if (keys.indexOf('buildings') !== -1) parts.push('way["building"](' + bbox + ');');
-    if (keys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
-    if (keys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
-    if (keys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
-    if (keys.indexOf('furniture') !== -1) parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
+    if (overpassKeys.indexOf('buildings') !== -1){
+      parts.push('way["building"](' + bbox + ');');
+      parts.push('way["building:part"](' + bbox + ');');
+      parts.push('relation["building"]["type"="multipolygon"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
+    if (overpassKeys.indexOf('walls') !== -1) parts.push('way["barrier"](' + bbox + ');');
+    if (overpassKeys.indexOf('water') !== -1){
+      parts.push('way["natural"="water"](' + bbox + ');');
+      parts.push('way["waterway"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('vegetation') !== -1){
+      parts.push('way["landuse"~"^(grass|forest|meadow)$"](' + bbox + ');');
+      parts.push('way["natural"="wood"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
+    if (overpassKeys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
+    if (overpassKeys.indexOf('furniture') !== -1){
+      parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
+      parts.push('node["highway"~"^(traffic_signals|bus_stop)$"](' + bbox + ');');
+    }
 
-    var query = '[out:json][timeout:60];(' + parts.join('') + ');out geom;';
+    var query = parts.length ? ('[out:json][timeout:60];(' + parts.join('') + ');out geom;') : null;
 
     fetchBtn.disabled = true;
-    setStatus('<span class="spinner"></span>Interrogation d\'Overpass…', false, true);
+    setStatus('<span class="spinner"></span>Interrogation…', false, true);
 
     // clear previous preview layers
     Object.keys(resultLayers).forEach(function(k){
@@ -410,12 +488,19 @@
       });
     }
 
-    fetchFromMirrors(OVERPASS_MIRRORS, query)
-    .then(function(data){
-      var elements = data.elements || [];
+    var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
+    var ignPromise = useIGN
+      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN : ' + err.message); })
+      : Promise.resolve(null);
+
+    Promise.all([overpassPromise, ignPromise])
+    .then(function(results){
+      var elements = results[0].elements || [];
+      var ignFc = results[1];
       keys.forEach(function(key){
         var def = LAYERS[key];
-        var fc = elementsToGeoJSON(elements, def.filter);
+        var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
+                                                  : elementsToGeoJSON(elements, def.filter);
         resultLayers[key] = { fc: fc };
         document.getElementById('count_'+key).textContent = fc.features.length;
         if (fc.features.length){
@@ -430,7 +515,7 @@
         }
       });
       var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
-      setStatus(total + ' géométries récupérées.', false);
+      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + '.', false);
       statusEl.classList.add('ok');
       fetchBtn.disabled = false;
       if (total > 0){
@@ -441,15 +526,78 @@
       }
     })
     .catch(function(err){
-      setStatus('Échec Overpass : ' + err.message + ' (réessaie, ou réduis la zone)', true);
+      setStatus('Échec : ' + err.message + ' (réessaie, ou réduis la zone)', true);
       fetchBtn.disabled = false;
     });
   });
+
+  // area-like ways: closed rings that should become Polygon, not LineString
+  function isAreaTag(tags){
+    return !!tags.building || !!tags['building:part'] ||
+      tags.natural === 'water' || tags.natural === 'wood' ||
+      ['grass','forest','meadow'].indexOf(tags.landuse) !== -1;
+  }
+
+  // building height + roof estimate from OSM tags (height/building:levels, roof:shape/roof:height/roof:levels)
+  function buildingHeightAndRoof(tags){
+    var h = null;
+    if (tags.height) h = parseFloat(tags.height);
+    else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
+    var totalHeight = (h && !isNaN(h)) ? h : 9;
+
+    var roofShape = tags['roof:shape'] || 'flat';
+    var roofHeight = 0;
+    if (roofShape !== 'flat'){
+      if (tags['roof:height']) roofHeight = parseFloat(tags['roof:height']);
+      else if (tags['roof:levels']) roofHeight = parseFloat(tags['roof:levels']) * 3;
+      else roofHeight = Math.min(2.5, totalHeight * 0.25);
+      if (isNaN(roofHeight) || roofHeight <= 0) roofHeight = 0;
+      if (roofHeight >= totalHeight) roofHeight = totalHeight * 0.4;
+    }
+    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight };
+  }
+
+  function buildProps(el, tags){
+    var props = { osm_id: el.id, osm_type: el.type };
+    Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
+    if (tags.building || tags['building:part']){
+      var bh = buildingHeightAndRoof(tags);
+      props.height_est_m = bh.totalHeight;
+      props.roof_shape = bh.roofShape;
+      props.roof_height_m = bh.roofHeight;
+      props.wall_height_m = bh.wallHeight;
+    }
+    if (tags.barrier){
+      props.wall_height_m = (tags.barrier === 'wall') ? 1.8 : (tags.barrier === 'hedge' ? 1.2 : 1.1);
+    }
+    return props;
+  }
 
   function elementsToGeoJSON(elements, filterFn){
     var features = [];
     for (var i=0; i<elements.length; i++){
       var el = elements[i];
+
+      // relations (multipolygon buildings): outer ring(s) + inner ring(s) as holes.
+      // simplified: all inner rings are attached as holes of the first outer ring —
+      // covers the common single-outer courtyard case, not multi-outer multi-hole relations.
+      if (el.type === 'relation'){
+        var rtags = el.tags || {};
+        if (!filterFn(rtags) || !el.members) continue;
+        var outerRings = [], innerRings = [];
+        el.members.forEach(function(m){
+          if (!m.geometry) return;
+          var ring = m.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+          if (ring.length < 3) return;
+          (m.role === 'inner' ? innerRings : outerRings).push(ring);
+        });
+        outerRings.forEach(function(ring, idx){
+          var coordinates = [ring].concat(idx === 0 ? innerRings : []);
+          features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates: coordinates }, properties: buildProps(el, rtags) });
+        });
+        continue;
+      }
+
       var tags = el.tags || {};
       if (!filterFn(tags)) continue;
 
@@ -462,7 +610,7 @@
         var closed = coords.length > 2 &&
           coords[0][0] === coords[coords.length-1][0] &&
           coords[0][1] === coords[coords.length-1][1];
-        if (closed && tags.building){
+        if (closed && isAreaTag(tags)){
           geometry = { type:'Polygon', coordinates:[coords] };
         } else {
           geometry = { type:'LineString', coordinates: coords };
@@ -471,16 +619,7 @@
         continue;
       }
 
-      var props = { osm_id: el.id, osm_type: el.type };
-      Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
-      if (tags.building){
-        var h = null;
-        if (tags.height) h = parseFloat(tags.height);
-        else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
-        props.height_est_m = (h && !isNaN(h)) ? h : 9;
-      }
-
-      features.push({ type:'Feature', geometry: geometry, properties: props });
+      features.push({ type:'Feature', geometry: geometry, properties: buildProps(el, tags) });
     }
     return { type:'FeatureCollection', features: features };
   }
@@ -516,35 +655,117 @@
     };
   }
 
+  function polygonRingToPoints(ring, center){
+    var pts = ring.map(function(c){ var p = project(c[1], c[0], center); return new THREE.Vector2(p.x, p.z); });
+    if (pts.length > 1 && pts[0].equals(pts[pts.length-1])) pts.pop();
+    return pts.length >= 3 ? pts : null;
+  }
+
+  function ringsToShape(coordinates, center){
+    var outerPts = polygonRingToPoints(coordinates[0], center);
+    if (!outerPts) return null;
+    var shape = new THREE.Shape(outerPts);
+    coordinates.slice(1).forEach(function(ring){
+      var holePts = polygonRingToPoints(ring, center);
+      if (holePts) shape.holes.push(new THREE.Path(holePts));
+    });
+    return { shape: shape, outerPts: outerPts };
+  }
+
+  function buildBuildingMesh(geom, props, mat, center){
+    var built = ringsToShape(geom.coordinates, center);
+    if (!built) return null;
+
+    var totalH = props.height_est_m || 9;
+    var roofH = props.roof_height_m || 0;
+    var wallH = props.wall_height_m;
+    if (!wallH || wallH < 0.3) wallH = totalH - roofH;
+    if (wallH < 0.3) wallH = totalH;
+
+    var group = new THREE.Group();
+    var wallGeom = new THREE.ExtrudeGeometry(built.shape, { depth: wallH, bevelEnabled:false });
+    wallGeom.rotateX(-Math.PI/2);
+    group.add(new THREE.Mesh(wallGeom, mat));
+
+    if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
+      // simplified pyramidal-cap approximation for any non-flat roof:shape — real per-type
+      // roof geometry (ridge lines for gabled, hip planes...) is out of scope for a draft tool.
+      var outerPts = built.outerPts;
+      var cx = 0, cz = 0;
+      outerPts.forEach(function(p){ cx += p.x; cz += p.y; });
+      cx /= outerPts.length; cz /= outerPts.length;
+
+      var positions = [];
+      for (var i=0; i<outerPts.length; i++){
+        var p1 = outerPts[i], p2 = outerPts[(i+1)%outerPts.length];
+        positions.push(p1.x, wallH, p1.y,  p2.x, wallH, p2.y,  cx, wallH+roofH, cz);
+      }
+      var roofGeom = new THREE.BufferGeometry();
+      roofGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      roofGeom.computeVertexNormals();
+      var roofMat = new THREE.MeshStandardMaterial({ color: mat.color.clone().multiplyScalar(0.75), roughness:0.9 });
+      group.add(new THREE.Mesh(roofGeom, roofMat));
+    }
+    return group;
+  }
+
+  function buildFlatAreaMesh(geom, mat, center, yLevel){
+    var built = ringsToShape(geom.coordinates, center);
+    if (!built) return null;
+    var geometry = new THREE.ShapeGeometry(built.shape);
+    geometry.rotateX(-Math.PI/2);
+    var mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: mat.color, roughness:1, side:THREE.DoubleSide }));
+    mesh.position.y = yLevel;
+    return mesh;
+  }
+
+  function estimateRoadWidth(props){
+    if (props.width){
+      var w = parseFloat(props.width);
+      if (!isNaN(w) && w > 0) return w;
+    }
+    var byClass = {
+      motorway:12, trunk:11, primary:9, secondary:8, tertiary:7,
+      residential:6, unclassified:6, living_street:5.5, service:3.5, track:3,
+      footway:2, path:1.5, cycleway:2, pedestrian:4, steps:1.5
+    };
+    if (byClass[props.highway]) return byClass[props.highway];
+    if (props.lanes){
+      var lanes = parseFloat(props.lanes);
+      if (!isNaN(lanes) && lanes > 0) return Math.max(3, lanes * 3.2);
+    }
+    return 5;
+  }
+
   function buildFeatureMesh(key, feature, color, center){
     var geom = feature.geometry;
+    var props = feature.properties || {};
     var mat = new THREE.MeshStandardMaterial({ color: color, roughness:0.85, metalness:0.05 });
 
     if (key === 'buildings' && geom.type === 'Polygon'){
-      var ring = geom.coordinates[0];
-      var pts = ring.map(function(c){ var p = project(c[1], c[0], center); return new THREE.Vector2(p.x, p.z); });
-      if (pts.length > 1 && pts[0].equals(pts[pts.length-1])) pts.pop();
-      if (pts.length < 3) return null;
-      var shape = new THREE.Shape(pts);
-      var h = feature.properties.height_est_m || 9;
-      var extrudeGeom = new THREE.ExtrudeGeometry(shape, { depth:h, bevelEnabled:false });
-      extrudeGeom.rotateX(-Math.PI/2);
-      return new THREE.Mesh(extrudeGeom, mat);
+      return buildBuildingMesh(geom, props, mat, center);
+    }
+
+    if ((key === 'water' || key === 'vegetation') && geom.type === 'Polygon'){
+      return buildFlatAreaMesh(geom, mat, center, key === 'water' ? 0.02 : 0.03);
     }
 
     if (geom.type === 'LineString'){
       var coords = geom.coordinates;
       var group = new THREE.Group();
-      var width = (key === 'roads') ? 4 : 0.6;
+      var width, yLevel, boxHeight;
+      if (key === 'roads'){ width = estimateRoadWidth(props); boxHeight = 0.15; yLevel = boxHeight/2; }
+      else if (key === 'walls'){ width = 0.25; boxHeight = props.wall_height_m || 1.5; yLevel = boxHeight/2; }
+      else { width = 0.6; boxHeight = 0.15; yLevel = boxHeight/2; }
       for (var i=0; i<coords.length-1; i++){
         var a = project(coords[i][1], coords[i][0], center);
         var b = project(coords[i+1][1], coords[i+1][0], center);
         var dx = b.x - a.x, dz = b.z - a.z;
         var len = Math.sqrt(dx*dx + dz*dz);
         if (len < 0.01) continue;
-        var segGeom = new THREE.BoxGeometry(len, 0.15, width);
+        var segGeom = new THREE.BoxGeometry(len, boxHeight, width);
         var segMesh = new THREE.Mesh(segGeom, mat);
-        segMesh.position.set((a.x+b.x)/2, 0.05, (a.z+b.z)/2);
+        segMesh.position.set((a.x+b.x)/2, yLevel, (a.z+b.z)/2);
         segMesh.rotation.y = -Math.atan2(dz, dx);
         group.add(segMesh);
       }
@@ -709,124 +930,230 @@
 
   function buildBlenderScript(center){
     return [
-'# -*- coding: utf-8 -*-',
-'# Genere par l\'extracteur de geometries OSM (meme centre de projection que l\'apercu 3D navigateur).',
-'#',
-'# Usage :',
-'#  1) Telecharge les .geojson des couches voulues (boutons a gauche) dans LE MEME DOSSIER que ce script.',
-'#  2) Dans Blender : onglet "Scripting" -> Open -> ce fichier -> Run Script (Alt+P).',
-'#  3) zone.abc est ecrit a cote de ce script.',
-'',
-'import bpy, bmesh, json, math, os',
-'',
-'FOLDER = os.path.dirname(os.path.abspath(bpy.data.filepath)) if bpy.data.filepath else os.path.dirname(os.path.abspath(__file__))',
+"# -*- coding: utf-8 -*-",
+"# Genere par l'extracteur de geometries OSM/IGN (meme centre de projection que l'apercu 3D navigateur).",
+"#",
+"# Usage :",
+"#  1) Telecharge les .geojson des couches voulues (boutons a gauche) dans LE MEME DOSSIER que ce script.",
+"#  2) Dans Blender : onglet \"Scripting\" -> Open -> ce fichier -> Run Script (Alt+P).",
+"#  3) zone.abc est ecrit a cote de ce script.",
+"#",
+"# Limitation connue : les cours interieures des batiments (trous / multipolygones avec \"inner\")",
+"# ne sont pas evidees ici (l'apercu web les gere visuellement, pas cet export) -- seul le contour",
+"# exterieur est extrude. A ameliorer plus tard si besoin (necessite un modifier Boolean par trou).",
+"",
+"import bpy, bmesh, json, math, os",
+"",
+"FOLDER = os.path.dirname(os.path.abspath(bpy.data.filepath)) if bpy.data.filepath else os.path.dirname(os.path.abspath(__file__))",
 'CENTER_LAT = ' + center.lat.toFixed(8),
 'CENTER_LON = ' + center.lng.toFixed(8),
-'M_PER_DEG_LAT = 111320.0',
-'M_PER_DEG_LON = 111320.0 * math.cos(math.radians(CENTER_LAT))',
-'',
-'LAYER_FILES = {',
-'    "buildings": "buildings.geojson",',
-'    "roads": "roads.geojson",',
-'    "lamps": "lamps.geojson",',
-'    "trees": "trees.geojson",',
-'    "furniture": "furniture.geojson",',
-'}',
-'',
-'def project(lon, lat):',
-'    x = (lon - CENTER_LON) * M_PER_DEG_LON',
-'    z = -(lat - CENTER_LAT) * M_PER_DEG_LAT',
-'    return x, z',
-'',
-'def load_fc(path):',
-'    if not os.path.isfile(path):',
-'        return None',
-'    with open(path, "r", encoding="utf-8") as f:',
-'        return json.load(f)',
-'',
-'def add_building(name, feature, collection):',
-'    coords = feature["geometry"]["coordinates"][0]',
-'    height = feature["properties"].get("height_est_m", 9.0)',
-'    verts = [project(c[0], c[1]) for c in coords]',
-'    if len(verts) > 1 and verts[0] == verts[-1]:',
-'        verts = verts[:-1]',
-'    if len(verts) < 3:',
-'        return',
-'    mesh = bpy.data.meshes.new(name)',
-'    bm = bmesh.new()',
-'    bm_verts = [bm.verts.new((x, z, 0.0)) for (x, z) in verts]',
-'    try:',
-'        face = bm.faces.new(bm_verts)',
-'    except ValueError:',
-'        bm.free()',
-'        return',
-'    ret = bmesh.ops.extrude_face_region(bm, geom=[face])',
-'    extruded = [v for v in ret["geom"] if isinstance(v, bmesh.types.BMVert)]',
-'    bmesh.ops.translate(bm, verts=extruded, vec=(0, 0, height))',
-'    bm.to_mesh(mesh)',
-'    bm.free()',
-'    obj = bpy.data.objects.new(name, mesh)',
-'    collection.objects.link(obj)',
-'',
-'def add_road_segment(name, p1, p2, width, collection):',
-'    x1, z1 = p1',
-'    x2, z2 = p2',
-'    dx, dz = x2 - x1, z2 - z1',
-'    length = math.hypot(dx, dz)',
-'    if length < 0.01:',
-'        return',
-'    angle = math.atan2(dz, dx)',
-'    bpy.ops.mesh.primitive_cube_add(size=1, location=((x1+x2)/2, (z1+z2)/2, 0.075))',
-'    obj = bpy.context.active_object',
-'    obj.scale = (length, width, 0.15)',
-'    obj.rotation_euler[2] = angle',
-'    obj.name = name',
-'    for c in list(obj.users_collection):',
-'        c.objects.unlink(obj)',
-'    collection.objects.link(obj)',
-'',
-'def add_point_marker(name, x, z, kind, collection):',
-'    if kind == "lamps":',
-'        bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=4, location=(x, z, 2))',
-'    elif kind == "trees":',
-'        bpy.ops.mesh.primitive_cone_add(radius1=1.6, depth=3.5, location=(x, z, 3.25))',
-'    else:',
-'        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(x, z, 0.3))',
-'    obj = bpy.context.active_object',
-'    obj.name = name',
-'    for c in list(obj.users_collection):',
-'        c.objects.unlink(obj)',
-'    collection.objects.link(obj)',
-'',
-'collection = bpy.data.collections.new("OSM_zone")',
-'bpy.context.scene.collection.children.link(collection)',
-'',
-'for layer_key, filename in LAYER_FILES.items():',
-'    fc = load_fc(os.path.join(FOLDER, filename))',
-'    if not fc:',
-'        continue',
-'    for i, feature in enumerate(fc["features"]):',
-'        gtype = feature["geometry"]["type"]',
-'        name = "%s_%d" % (layer_key, i)',
-'        if gtype == "Polygon" and layer_key == "buildings":',
-'            add_building(name, feature, collection)',
-'        elif gtype == "LineString":',
-'            coords = feature["geometry"]["coordinates"]',
-'            width = 4.0 if layer_key == "roads" else 0.6',
-'            for j in range(len(coords) - 1):',
-'                p1 = project(coords[j][0], coords[j][1])',
-'                p2 = project(coords[j+1][0], coords[j+1][1])',
-'                add_road_segment("%s_seg%d" % (name, j), p1, p2, width, collection)',
-'        elif gtype == "Point":',
-'            x, z = project(feature["geometry"]["coordinates"][0], feature["geometry"]["coordinates"][1])',
-'            add_point_marker(name, x, z, layer_key, collection)',
-'',
-'for obj in bpy.context.scene.objects:',
-'    obj.select_set(obj.name in [o.name for o in collection.objects])',
-'',
-'abc_path = os.path.join(FOLDER, "zone.abc")',
-'bpy.ops.wm.alembic_export(filepath=abc_path, selected=True, flatten=False)',
-'print("Export Alembic termine :", abc_path)'
+"M_PER_DEG_LAT = 111320.0",
+"M_PER_DEG_LON = 111320.0 * math.cos(math.radians(CENTER_LAT))",
+"",
+"LAYER_FILES = {",
+"    \"buildings\": \"buildings.geojson\",",
+"    \"roads\": \"roads.geojson\",",
+"    \"walls\": \"walls.geojson\",",
+"    \"water\": \"water.geojson\",",
+"    \"vegetation\": \"vegetation.geojson\",",
+"    \"lamps\": \"lamps.geojson\",",
+"    \"trees\": \"trees.geojson\",",
+"    \"furniture\": \"furniture.geojson\",",
+"}",
+"",
+"ROAD_WIDTH_BY_CLASS = {",
+"    \"motorway\": 12, \"trunk\": 11, \"primary\": 9, \"secondary\": 8, \"tertiary\": 7,",
+"    \"residential\": 6, \"unclassified\": 6, \"living_street\": 5.5, \"service\": 3.5,",
+"    \"track\": 3, \"footway\": 2, \"path\": 1.5, \"cycleway\": 2, \"pedestrian\": 4, \"steps\": 1.5,",
+"}",
+"",
+"",
+"def project(lon, lat):",
+"    x = (lon - CENTER_LON) * M_PER_DEG_LON",
+"    z = -(lat - CENTER_LAT) * M_PER_DEG_LAT",
+"    return x, z",
+"",
+"",
+"def load_fc(path):",
+"    if not os.path.isfile(path):",
+"        return None",
+"    with open(path, \"r\", encoding=\"utf-8\") as f:",
+"        return json.load(f)",
+"",
+"",
+"def ring_to_local(ring):",
+"    pts = [project(c[0], c[1]) for c in ring]",
+"    if len(pts) > 1 and pts[0] == pts[-1]:",
+"        pts = pts[:-1]",
+"    return pts",
+"",
+"",
+"def estimate_road_width(props):",
+"    w = props.get(\"width\")",
+"    if w:",
+"        try:",
+"            wv = float(w)",
+"            if wv > 0:",
+"                return wv",
+"        except (TypeError, ValueError):",
+"            pass",
+"    cls = props.get(\"highway\")",
+"    if cls in ROAD_WIDTH_BY_CLASS:",
+"        return ROAD_WIDTH_BY_CLASS[cls]",
+"    lanes = props.get(\"lanes\")",
+"    if lanes:",
+"        try:",
+"            lv = float(lanes)",
+"            if lv > 0:",
+"                return max(3.0, lv * 3.2)",
+"        except (TypeError, ValueError):",
+"            pass",
+"    return 5.0",
+"",
+"",
+"def unlink_from_all(obj, collection):",
+"    for c in list(obj.users_collection):",
+"        c.objects.unlink(obj)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def add_building(name, feature, collection):",
+"    outer_pts = ring_to_local(feature[\"geometry\"][\"coordinates\"][0])",
+"    if len(outer_pts) < 3:",
+"        return",
+"",
+"    props = feature[\"properties\"]",
+"    total_h = props.get(\"height_est_m\", 9.0) or 9.0",
+"    roof_h = props.get(\"roof_height_m\", 0.0) or 0.0",
+"    roof_shape = props.get(\"roof_shape\", \"flat\")",
+"    wall_h = props.get(\"wall_height_m\", total_h - roof_h)",
+"    if not wall_h or wall_h < 0.3:",
+"        wall_h = total_h",
+"",
+"    mesh = bpy.data.meshes.new(name)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, 0.0)) for (x, z) in outer_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    ret = bmesh.ops.extrude_face_region(bm, geom=[face])",
+"    extruded = [v for v in ret[\"geom\"] if isinstance(v, bmesh.types.BMVert)]",
+"    bmesh.ops.translate(bm, verts=extruded, vec=(0, 0, wall_h))",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name, mesh)",
+"    collection.objects.link(obj)",
+"",
+"    if roof_h > 0.2 and roof_shape and roof_shape != \"flat\":",
+"        # simplified pyramidal-cap approximation (ridge/hip roofs are not modeled per-type)",
+"        cx = sum(p[0] for p in outer_pts) / len(outer_pts)",
+"        cz = sum(p[1] for p in outer_pts) / len(outer_pts)",
+"        roof_mesh = bpy.data.meshes.new(name + \"_roof\")",
+"        rbm = bmesh.new()",
+"        apex = rbm.verts.new((cx, cz, wall_h + roof_h))",
+"        ring_verts = [rbm.verts.new((x, z, wall_h)) for (x, z) in outer_pts]",
+"        n = len(ring_verts)",
+"        for i in range(n):",
+"            try:",
+"                rbm.faces.new((ring_verts[i], ring_verts[(i + 1) % n], apex))",
+"            except ValueError:",
+"                pass",
+"        rbm.to_mesh(roof_mesh)",
+"        rbm.free()",
+"        robj = bpy.data.objects.new(name + \"_roof\", roof_mesh)",
+"        collection.objects.link(robj)",
+"",
+"",
+"def add_flat_area(name, feature, z, collection):",
+"    pts = ring_to_local(feature[\"geometry\"][\"coordinates\"][0])",
+"    if len(pts) < 3:",
+"        return",
+"    mesh = bpy.data.meshes.new(name)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, zz, z)) for (x, zz) in pts]",
+"    try:",
+"        bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name, mesh)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def add_line_segment(name, p1, p2, width, z_center, height, collection):",
+"    x1, z1 = p1",
+"    x2, z2 = p2",
+"    dx, dz = x2 - x1, z2 - z1",
+"    length = math.hypot(dx, dz)",
+"    if length < 0.01:",
+"        return",
+"    angle = math.atan2(dz, dx)",
+"    bpy.ops.mesh.primitive_cube_add(size=1, location=((x1 + x2) / 2, (z1 + z2) / 2, z_center))",
+"    obj = bpy.context.active_object",
+"    obj.scale = (length, width, height)",
+"    obj.rotation_euler[2] = angle",
+"    obj.name = name",
+"    unlink_from_all(obj, collection)",
+"",
+"",
+"def add_point_marker(name, x, z, kind, collection):",
+"    if kind == \"lamps\":",
+"        bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=4, location=(x, z, 2))",
+"    elif kind == \"trees\":",
+"        bpy.ops.mesh.primitive_cone_add(radius1=1.6, depth=3.5, location=(x, z, 3.25))",
+"    else:",
+"        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(x, z, 0.3))",
+"    obj = bpy.context.active_object",
+"    obj.name = name",
+"    unlink_from_all(obj, collection)",
+"",
+"",
+"collection = bpy.data.collections.new(\"OSM_zone\")",
+"bpy.context.scene.collection.children.link(collection)",
+"",
+"for layer_key, filename in LAYER_FILES.items():",
+"    fc = load_fc(os.path.join(FOLDER, filename))",
+"    if not fc:",
+"        continue",
+"    for i, feature in enumerate(fc[\"features\"]):",
+"        gtype = feature[\"geometry\"][\"type\"]",
+"        name = \"%s_%d\" % (layer_key, i)",
+"",
+"        if gtype == \"Polygon\" and layer_key == \"buildings\":",
+"            add_building(name, feature, collection)",
+"",
+"        elif gtype == \"Polygon\" and layer_key in (\"water\", \"vegetation\"):",
+"            add_flat_area(name, feature, 0.02 if layer_key == \"water\" else 0.03, collection)",
+"",
+"        elif gtype == \"LineString\":",
+"            coords = feature[\"geometry\"][\"coordinates\"]",
+"            if layer_key == \"roads\":",
+"                width, height = estimate_road_width(feature[\"properties\"]), 0.15",
+"            elif layer_key == \"walls\":",
+"                width = 0.25",
+"                height = feature[\"properties\"].get(\"wall_height_m\", 1.5) or 1.5",
+"            else:",
+"                width, height = 0.6, 0.15",
+"            z_center = height / 2.0",
+"            for j in range(len(coords) - 1):",
+"                p1 = project(coords[j][0], coords[j][1])",
+"                p2 = project(coords[j + 1][0], coords[j + 1][1])",
+"                add_line_segment(\"%s_seg%d\" % (name, j), p1, p2, width, z_center, height, collection)",
+"",
+"        elif gtype == \"Point\":",
+"            x, z = project(feature[\"geometry\"][\"coordinates\"][0], feature[\"geometry\"][\"coordinates\"][1])",
+"            add_point_marker(name, x, z, layer_key, collection)",
+"",
+"for obj in bpy.context.scene.objects:",
+"    obj.select_set(obj.name in [o.name for o in collection.objects])",
+"",
+"abc_path = os.path.join(FOLDER, \"zone.abc\")",
+"bpy.ops.wm.alembic_export(filepath=abc_path, selected=True, flatten=False)",
+"print(\"Export Alembic termine :\", abc_path)",
     ].join('\n');
   }
 
