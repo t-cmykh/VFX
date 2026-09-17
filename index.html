@@ -165,6 +165,12 @@
       <button id="drawBtn" class="block primary">Dessiner une zone</button>
       <div id="zoneInfo">Aucune zone sélectionnée.</div>
       <div id="areaWarn"></div>
+      <div class="layer-row" style="padding-top:10px;">
+        <label>
+          <input type="checkbox" id="chkRelief">
+          <span>Relief du terrain (IGN, France)</span>
+        </label>
+      </div>
     </div>
 
     <div class="section">
@@ -204,6 +210,8 @@
       gérés (socles, tours à étages). <code>building:colour</code>/<code>roof:colour</code> appliqués
       si hex valide. Cours intérieures (relations multipolygon) évidées dans l'aperçu 3D <b>et</b>
       dans l'export Blender (modifier Boolean par trou).
+      Relief : case « Relief du terrain » (IGN RGE ALTI, France) — sol et objets suivent
+      l'altitude réelle au lieu d'un plan plat, dans l'aperçu 3D, l'OBJ et le script Blender.
       Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
     </footer>
   </div>
@@ -230,6 +238,8 @@
   };
 
   var IGN_WFS = 'https://data.geopf.fr/wfs/ows';
+  var IGN_ELEVATION_API = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
+  var terrainGrid = null; // set after a fetch with "Relief du terrain" checked
 
   var map = L.map('map', { zoomControl:true }).setView([48.8566, 2.3522], 15); // Paris par défaut
   // tile.openstreetmap.org bloque les requêtes sans Referer correct, et CARTO exige désormais
@@ -414,6 +424,130 @@
     });
   }
 
+  // --- IGN elevation (RGE ALTI, France) : regular lat/lon grid sampled in one batched request,
+  // used to drape the ground and offset every feature's placement by local terrain height.
+  function fetchIGNElevationGrid(bounds){
+    var gridN = 10;
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var lats = [], lons = [];
+    for (var i=0;i<gridN;i++){
+      var lat = sw.lat + (ne.lat-sw.lat)*i/(gridN-1);
+      for (var j=0;j<gridN;j++){
+        var lon = sw.lng + (ne.lng-sw.lng)*j/(gridN-1);
+        lats.push(lat.toFixed(6));
+        lons.push(lon.toFixed(6));
+      }
+    }
+    var url = IGN_ELEVATION_API + '?lon=' + lons.join('|') + '&lat=' + lats.join('|') +
+      '&resource=ign_rge_alti_wld&indent=false';
+    return fetch(url).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (IGN élévation)');
+      return r.json();
+    }).then(function(data){
+      var els = (data.elevations || []).map(function(e){ return e.z; });
+      if (els.length !== gridN*gridN) throw new Error('réponse IGN élévation incomplète');
+      var minE = Math.min.apply(null, els);
+      var grid = [];
+      for (var i=0;i<gridN;i++) grid.push(els.slice(i*gridN, i*gridN+gridN));
+      return {
+        gridN: gridN,
+        minLat: sw.lat, maxLat: ne.lat, minLon: sw.lng, maxLon: ne.lng,
+        elevations: grid, // elevations[i][j] : i = lat index (south→north), j = lon index (west→east)
+        refElevation: minE // the zone's lowest sampled point becomes local y=0
+      };
+    });
+  }
+
+  // builds a (x,z)->y sampler in local meters from a fetched elevation grid, for the given
+  // projection center. Robust to axis direction (our project() flips sign on lat->z) by driving
+  // interpolation off the actual projected coordinate values rather than assumed index order.
+  function buildTerrainSampler(terrain, center){
+    if (!terrain) return null;
+    var n = terrain.gridN;
+    var xs = [], zs = [];
+    for (var j=0;j<n;j++){
+      var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*j/(n-1);
+      xs.push(project(terrain.minLat, lon, center).x);
+    }
+    for (var i=0;i<n;i++){
+      var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*i/(n-1);
+      zs.push(project(lat, terrain.minLon, center).z);
+    }
+    var elev = terrain.elevations.map(function(row){
+      return row.map(function(e){ return e - terrain.refElevation; });
+    });
+
+    function findBracket(arr, v){
+      var hi = arr.length-1;
+      var ascending = arr[hi] >= arr[0];
+      if (ascending){
+        if (v<=arr[0]) return {i0:0,i1:0,f:0};
+        if (v>=arr[hi]) return {i0:hi,i1:hi,f:0};
+        for (var k=0;k<hi;k++){
+          if (v>=arr[k] && v<=arr[k+1]) return {i0:k,i1:k+1,f:(v-arr[k])/((arr[k+1]-arr[k])||1)};
+        }
+      } else {
+        if (v>=arr[0]) return {i0:0,i1:0,f:0};
+        if (v<=arr[hi]) return {i0:hi,i1:hi,f:0};
+        for (var k2=0;k2<hi;k2++){
+          if (v<=arr[k2] && v>=arr[k2+1]) return {i0:k2,i1:k2+1,f:(arr[k2]-v)/((arr[k2]-arr[k2+1])||1)};
+        }
+      }
+      return {i0:0,i1:0,f:0};
+    }
+
+    return function(x, z){
+      var jr = findBracket(xs, x), ir = findBracket(zs, z);
+      var e00=elev[ir.i0][jr.i0], e01=elev[ir.i0][jr.i1];
+      var e10=elev[ir.i1][jr.i0], e11=elev[ir.i1][jr.i1];
+      var e0 = e00*(1-jr.f) + e01*jr.f;
+      var e1 = e10*(1-jr.f) + e11*jr.f;
+      return e0*(1-ir.f) + e1*ir.f;
+    };
+  }
+
+  function buildTerrainGroundGeometry(terrain, center){
+    var n = terrain.gridN;
+    var pts = [];
+    for (var i=0;i<n;i++){
+      pts[i] = [];
+      for (var j=0;j<n;j++){
+        var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*i/(n-1);
+        var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*j/(n-1);
+        var p = project(lat, lon, center);
+        pts[i][j] = { x:p.x, y:(terrain.elevations[i][j]-terrain.refElevation)-0.05, z:p.z };
+      }
+    }
+    var positions = [];
+    for (var i2=0;i2<n-1;i2++){
+      for (var j2=0;j2<n-1;j2++){
+        var a=pts[i2][j2], b=pts[i2][j2+1], c=pts[i2+1][j2], d=pts[i2+1][j2+1];
+        positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+        positions.push(b.x,b.y,b.z, d.x,d.y,d.z, c.x,c.y,c.z);
+      }
+    }
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // representative lon/lat point of a raw (unprojected) GeoJSON geometry, used to look up its
+  // local terrain offset without needing a full centroid computation.
+  function representativeLonLat(geom){
+    if (geom.type === 'Point') return { lon:geom.coordinates[0], lat:geom.coordinates[1] };
+    if (geom.type === 'LineString'){
+      var c = geom.coordinates[Math.floor(geom.coordinates.length/2)];
+      return { lon:c[0], lat:c[1] };
+    }
+    if (geom.type === 'Polygon'){
+      var ring = geom.coordinates[0], slon=0, slat=0;
+      ring.forEach(function(c){ slon+=c[0]; slat+=c[1]; });
+      return { lon: slon/ring.length, lat: slat/ring.length };
+    }
+    return null;
+  }
+
   // --- overpass query + fetch ---
   fetchBtn.addEventListener('click', function(){
     if (!currentBounds) return;
@@ -460,6 +594,7 @@
     });
     resultLayers = {};
     fetchBounds = null;
+    terrainGrid = null;
     view3dBtn.disabled = true;
     exportObjBtn.disabled = true;
     exportAbcBtn.disabled = true;
@@ -492,15 +627,21 @@
       });
     }
 
+    var wantRelief = document.getElementById('chkRelief').checked;
+
     var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
     var ignPromise = useIGN
-      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN : ' + err.message); })
+      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN bâtiments : ' + err.message); })
+      : Promise.resolve(null);
+    var reliefPromise = wantRelief
+      ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
       : Promise.resolve(null);
 
-    Promise.all([overpassPromise, ignPromise])
+    Promise.all([overpassPromise, ignPromise, reliefPromise])
     .then(function(results){
       var elements = results[0].elements || [];
       var ignFc = results[1];
+      terrainGrid = results[2];
       keys.forEach(function(key){
         var def = LAYERS[key];
         var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
@@ -519,7 +660,7 @@
         }
       });
       var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
-      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + '.', false);
+      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + (terrainGrid ? ' + relief IGN' : '') + '.', false);
       statusEl.classList.add('ok');
       fetchBtn.disabled = false;
       if (total > 0){
@@ -983,7 +1124,19 @@
     return 5;
   }
 
-  function buildFeatureMesh(key, feature, color, center){
+  function buildFeatureMesh(key, feature, color, center, terrainFn){
+    var mesh = buildFeatureMeshImpl(key, feature, color, center);
+    if (mesh && terrainFn){
+      var rp = representativeLonLat(feature.geometry);
+      if (rp){
+        var p = project(rp.lat, rp.lon, center);
+        mesh.position.y = (mesh.position.y || 0) + terrainFn(p.x, p.z);
+      }
+    }
+    return mesh;
+  }
+
+  function buildFeatureMeshImpl(key, feature, color, center){
     var geom = feature.geometry;
     var props = feature.properties || {};
     var mat = new THREE.MeshStandardMaterial({ color: color, roughness:0.85, metalness:0.05 });
@@ -1043,14 +1196,14 @@
     return null;
   }
 
-  function buildGeometryGroup(center){
+  function buildGeometryGroup(center, terrainFn){
     var group = new THREE.Group();
     group.name = 'zone';
     Object.keys(resultLayers).forEach(function(key){
       var fc = resultLayers[key].fc;
       var color = new THREE.Color(LAYERS[key].color);
       fc.features.forEach(function(f){
-        var mesh = buildFeatureMesh(key, f, color, center);
+        var mesh = buildFeatureMesh(key, f, color, center, terrainFn);
         if (mesh) group.add(mesh);
       });
     });
@@ -1083,21 +1236,28 @@
     threeScene.add(new THREE.AmbientLight(0x404050, 0.35));
 
     var center = fetchBounds.getCenter();
-    threeScene.add(buildGeometryGroup(center));
+    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
+    threeScene.add(buildGeometryGroup(center, terrainFn));
 
     var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
     var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
     var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
     var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
 
-    var ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(extentX, extentZ),
-      new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1 })
-    );
-    ground.rotation.x = -Math.PI/2;
-    ground.position.y = -0.05;
-    threeScene.add(ground);
-    threeScene.add(new THREE.GridHelper(Math.max(extentX, extentZ), 40, 0x2a2f3a, 0x1c2029));
+    if (terrainGrid){
+      var terrainGeom = buildTerrainGroundGeometry(terrainGrid, center);
+      var terrainMesh = new THREE.Mesh(terrainGeom, new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1, side:THREE.DoubleSide }));
+      threeScene.add(terrainMesh);
+    } else {
+      var ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(extentX, extentZ),
+        new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1 })
+      );
+      ground.rotation.x = -Math.PI/2;
+      ground.position.y = -0.05;
+      threeScene.add(ground);
+      threeScene.add(new THREE.GridHelper(Math.max(extentX, extentZ), 40, 0x2a2f3a, 0x1c2029));
+    }
 
     var dist = Math.max(extentX, extentZ, 60);
     threeCamera.position.set(dist*0.5, dist*0.55, dist*0.5);
@@ -1147,8 +1307,14 @@
   exportObjBtn.addEventListener('click', function(){
     if (!fetchBounds) return;
     var center = fetchBounds.getCenter();
+    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
     var exportScene = new THREE.Scene();
-    exportScene.add(buildGeometryGroup(center));
+    exportScene.add(buildGeometryGroup(center, terrainFn));
+    if (terrainGrid){
+      var terrainMesh = new THREE.Mesh(buildTerrainGroundGeometry(terrainGrid, center), new THREE.MeshStandardMaterial({ color:0x808080 }));
+      terrainMesh.name = 'terrain';
+      exportScene.add(terrainMesh);
+    }
     // OBJExporter reads mesh.matrixWorld directly and never updates it itself — without this,
     // every position/rotation set via .position/.rotation (roads, walls, lamps, trees, furniture,
     // and now min_height-offset building parts) is silently dropped from the export, since fresh
@@ -1171,7 +1337,7 @@
   exportAbcBtn.addEventListener('click', function(){
     if (!fetchBounds) return;
     var center = fetchBounds.getCenter();
-    var script = buildBlenderScript(center);
+    var script = buildBlenderScript(center, terrainGrid);
     var blob = new Blob([script], { type:'text/x-python' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -1180,7 +1346,7 @@
     setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
   });
 
-  function buildBlenderScript(center){
+  function buildBlenderScript(center, terrain){
     return [
 "# -*- coding: utf-8 -*-",
 "# Genere par l'extracteur de geometries OSM/IGN (meme centre de projection que l'apercu 3D navigateur).",
@@ -1197,6 +1363,9 @@
 "# Trous (cours interieures, relations multipolygon avec role \"inner\") : evides par un modifier",
 "# Boolean DIFFERENCE, un objet-decoupe temporaire par trou, supprime apres application.",
 "# Couleurs : building:colour / roof:colour appliquees si elles sont un hex #rrggbb/#rgb valide.",
+"# Relief (TERRAIN, si \"Relief du terrain\" etait coche lors de la recuperation) : chaque objet est",
+"# decale verticalement selon l'altitude locale IGN a sa position, et un maillage de sol suivant le",
+"# relief est ajoute -- meme grille, meme methode que l'apercu 3D navigateur.",
 "",
 "import bpy, bmesh, json, math, os",
 "",
@@ -1205,6 +1374,7 @@
 'CENTER_LON = ' + center.lng.toFixed(8),
 "M_PER_DEG_LAT = 111320.0",
 "M_PER_DEG_LON = 111320.0 * math.cos(math.radians(CENTER_LAT))",
+'TERRAIN = ' + (terrain ? JSON.stringify(terrain) : 'None'),
 "",
 "LAYER_FILES = {",
 "    \"buildings\": \"buildings.geojson\",",
@@ -1230,6 +1400,59 @@
 "    return x, z",
 "",
 "",
+"def terrain_offset(lon, lat):",
+"    # bilinear interpolation directly in lat/lon fractional-index space -- exactly equivalent to",
+"    # interpolating in local x/z meters here, since project() is a fixed linear (affine) scale of",
+"    # lon/lat with no rotation, so fractional position along one axis is identical either way.",
+"    if TERRAIN is None:",
+"        return 0.0",
+"    n = TERRAIN[\"gridN\"]",
+"    fi = (lat - TERRAIN[\"minLat\"]) / (TERRAIN[\"maxLat\"] - TERRAIN[\"minLat\"]) * (n - 1)",
+"    fj = (lon - TERRAIN[\"minLon\"]) / (TERRAIN[\"maxLon\"] - TERRAIN[\"minLon\"]) * (n - 1)",
+"    fi = max(0.0, min(n - 1, fi))",
+"    fj = max(0.0, min(n - 1, fj))",
+"    i0, i1 = int(fi), min(n - 1, int(fi) + 1)",
+"    j0, j1 = int(fj), min(n - 1, int(fj) + 1)",
+"    ti, tj = fi - i0, fj - j0",
+"    e = TERRAIN[\"elevations\"]",
+"    e00, e01 = e[i0][j0], e[i0][j1]",
+"    e10, e11 = e[i1][j0], e[i1][j1]",
+"    e0 = e00 * (1 - tj) + e01 * tj",
+"    e1 = e10 * (1 - tj) + e11 * tj",
+"    return (e0 * (1 - ti) + e1 * ti) - TERRAIN[\"refElevation\"]",
+"",
+"",
+"def add_terrain_ground(collection):",
+"    if TERRAIN is None:",
+"        return",
+"    n = TERRAIN[\"gridN\"]",
+"    pts = []",
+"    for i in range(n):",
+"        row = []",
+"        lat = TERRAIN[\"minLat\"] + (TERRAIN[\"maxLat\"] - TERRAIN[\"minLat\"]) * i / (n - 1)",
+"        for j in range(n):",
+"            lon = TERRAIN[\"minLon\"] + (TERRAIN[\"maxLon\"] - TERRAIN[\"minLon\"]) * j / (n - 1)",
+"            x, z = project(lon, lat)",
+"            row.append((x, z, TERRAIN[\"elevations\"][i][j] - TERRAIN[\"refElevation\"] - 0.05))",
+"        pts.append(row)",
+"",
+"    mesh = bpy.data.meshes.new(\"terrain\")",
+"    bm = bmesh.new()",
+"    grid = [[bm.verts.new(p) for p in row] for row in pts]",
+"    for i in range(n - 1):",
+"        for j in range(n - 1):",
+"            try:",
+"                bm.faces.new((grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]))",
+"            except ValueError:",
+"                pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(\"terrain\", mesh)",
+"    assign_material(obj, (0.08, 0.09, 0.1, 1.0))",
+"    collection.objects.link(obj)",
+"",
+"",
 "def load_fc(path):",
 "    if not os.path.isfile(path):",
 "        return None",
@@ -1242,6 +1465,12 @@
 "    if len(pts) > 1 and pts[0] == pts[-1]:",
 "        pts = pts[:-1]",
 "    return pts",
+"",
+"",
+"def ring_centroid_lonlat(ring):",
+"    slon = sum(c[0] for c in ring) / len(ring)",
+"    slat = sum(c[1] for c in ring) / len(ring)",
+"    return slon, slat",
 "",
 "",
 "def estimate_road_width(props):",
@@ -1544,6 +1773,9 @@
 "    wall_h = props.get(\"wall_height_m\", total_h - roof_h - min_h)",
 "    if not wall_h or wall_h < 0.3:",
 "        wall_h = total_h - min_h",
+"",
+"    clon, clat = ring_centroid_lonlat(coords_list[0])",
+"    min_h = min_h + terrain_offset(clon, clat)",
 "    wall_top = min_h + wall_h  # absolute elevation where the roof starts",
 "",
 "    wall_rgba = hex_to_rgba(props.get(\"building:colour\"), (0.55, 0.57, 0.62, 1.0))",
@@ -1580,9 +1812,12 @@
 "",
 "",
 "def add_flat_area(name, feature, z, collection):",
-"    pts = ring_to_local(feature[\"geometry\"][\"coordinates\"][0])",
+"    ring = feature[\"geometry\"][\"coordinates\"][0]",
+"    pts = ring_to_local(ring)",
 "    if len(pts) < 3:",
 "        return",
+"    clon, clat = ring_centroid_lonlat(ring)",
+"    z = z + terrain_offset(clon, clat)",
 "    mesh = bpy.data.meshes.new(name)",
 "    bm = bmesh.new()",
 "    verts = [bm.verts.new((x, zz, z)) for (x, zz) in pts]",
@@ -1597,7 +1832,7 @@
 "    collection.objects.link(obj)",
 "",
 "",
-"def add_line_segment(name, p1, p2, width, z_center, height, collection):",
+"def add_line_segment(name, p1, p2, width, z_center, height, z_offset, collection):",
 "    x1, z1 = p1",
 "    x2, z2 = p2",
 "    dx, dz = x2 - x1, z2 - z1",
@@ -1605,7 +1840,7 @@
 "    if length < 0.01:",
 "        return",
 "    angle = math.atan2(dz, dx)",
-"    bpy.ops.mesh.primitive_cube_add(size=1, location=((x1 + x2) / 2, (z1 + z2) / 2, z_center))",
+"    bpy.ops.mesh.primitive_cube_add(size=1, location=((x1 + x2) / 2, (z1 + z2) / 2, z_center + z_offset))",
 "    obj = bpy.context.active_object",
 "    obj.scale = (length, width, height)",
 "    obj.rotation_euler[2] = angle",
@@ -1613,13 +1848,13 @@
 "    unlink_from_all(obj, collection)",
 "",
 "",
-"def add_point_marker(name, x, z, kind, collection):",
+"def add_point_marker(name, x, z, kind, z_offset, collection):",
 "    if kind == \"lamps\":",
-"        bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=4, location=(x, z, 2))",
+"        bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=4, location=(x, z, 2 + z_offset))",
 "    elif kind == \"trees\":",
-"        bpy.ops.mesh.primitive_cone_add(radius1=1.6, depth=3.5, location=(x, z, 3.25))",
+"        bpy.ops.mesh.primitive_cone_add(radius1=1.6, depth=3.5, location=(x, z, 3.25 + z_offset))",
 "    else:",
-"        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(x, z, 0.3))",
+"        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(x, z, 0.3 + z_offset))",
 "    obj = bpy.context.active_object",
 "    obj.name = name",
 "    unlink_from_all(obj, collection)",
@@ -1627,6 +1862,8 @@
 "",
 "collection = bpy.data.collections.new(\"OSM_zone\")",
 "bpy.context.scene.collection.children.link(collection)",
+"",
+"add_terrain_ground(collection)",
 "",
 "for layer_key, filename in LAYER_FILES.items():",
 "    fc = load_fc(os.path.join(FOLDER, filename))",
@@ -1655,11 +1892,16 @@
 "            for j in range(len(coords) - 1):",
 "                p1 = project(coords[j][0], coords[j][1])",
 "                p2 = project(coords[j + 1][0], coords[j + 1][1])",
-"                add_line_segment(\"%s_seg%d\" % (name, j), p1, p2, width, z_center, height, collection)",
+"                mid_lon = (coords[j][0] + coords[j + 1][0]) / 2.0",
+"                mid_lat = (coords[j][1] + coords[j + 1][1]) / 2.0",
+"                z_off = terrain_offset(mid_lon, mid_lat)",
+"                add_line_segment(\"%s_seg%d\" % (name, j), p1, p2, width, z_center, height, z_off, collection)",
 "",
 "        elif gtype == \"Point\":",
-"            x, z = project(feature[\"geometry\"][\"coordinates\"][0], feature[\"geometry\"][\"coordinates\"][1])",
-"            add_point_marker(name, x, z, layer_key, collection)",
+"            lon, lat = feature[\"geometry\"][\"coordinates\"]",
+"            x, z = project(lon, lat)",
+"            z_off = terrain_offset(lon, lat)",
+"            add_point_marker(name, x, z, layer_key, z_off, collection)",
 "",
 "for obj in bpy.context.scene.objects:",
 "    obj.select_set(obj.name in [o.name for o in collection.objects])",
