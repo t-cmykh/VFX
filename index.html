@@ -660,7 +660,13 @@
         }
       });
       var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
-      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + (terrainGrid ? ' + relief IGN' : '') + '.', false);
+      var reliefTxt = '';
+      if (terrainGrid){
+        var flatEls = [].concat.apply([], terrainGrid.elevations);
+        var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
+        reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
+      }
+      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + '.', false);
       statusEl.classList.add('ok');
       fetchBtn.disabled = false;
       if (total > 0){
