@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<title>Extracteur géométries OSM — layout VFX</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<style>
+  :root{
+    --bg:#0e1013; --panel:#161920; --panel2:#1d212b; --border:#2a2f3a;
+    --text:#e7e9ee; --muted:#8a91a3; --accent:#ff8a3d; --accent-dim:#7a4224;
+    --ok:#3ddc84; --warn:#ffcf4d; --danger:#ff5c5c;
+    --c-building:#4da3ff; --c-road:#ffd23f; --c-lamp:#ff8a3d; --c-tree:#3ddc84; --c-furniture:#c792ea;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); overflow:hidden;
+  }
+  #app{display:flex; height:100%; width:100%;}
+  #map{flex:1; height:100%; background:#0a0b0d;}
+  #panel{
+    width:360px; min-width:360px; height:100%; background:var(--panel);
+    border-left:1px solid var(--border); display:flex; flex-direction:column;
+    overflow-y:auto;
+  }
+  header.brand{
+    padding:16px 18px 14px; border-bottom:1px solid var(--border);
+  }
+  header.brand h1{font-size:15px; margin:0 0 3px; letter-spacing:.02em; font-weight:700;}
+  header.brand p{margin:0; font-size:12px; color:var(--muted); line-height:1.4;}
+
+  .section{padding:16px 18px; border-bottom:1px solid var(--border);}
+  .section h2{
+    font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+    margin:0 0 10px; font-weight:700;
+  }
+
+  .search-row{display:flex; gap:8px;}
+  input[type="text"]{
+    flex:1; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    padding:9px 10px; border-radius:6px; font-size:13px; min-width:0;
+  }
+  input[type="text"]:focus{outline:none; border-color:var(--accent);}
+  button{
+    font-family:inherit; font-size:13px; font-weight:600; border-radius:6px; border:1px solid var(--border);
+    background:var(--panel2); color:var(--text); padding:9px 12px; cursor:pointer;
+  }
+  button:hover{border-color:var(--accent);}
+  button:disabled{opacity:.4; cursor:not-allowed;}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#1a0f04;}
+  button.primary:hover{filter:brightness(1.08);}
+  button.block{width:100%;}
+  button.ghost{background:transparent;}
+
+  .layer-row{
+    display:flex; align-items:center; gap:10px; padding:7px 0; font-size:13px;
+  }
+  .layer-row label{flex:1; display:flex; align-items:center; gap:9px; cursor:pointer; user-select:none;}
+  .swatch{width:11px; height:11px; border-radius:3px; flex:none;}
+  .layer-row input[type="checkbox"]{
+    width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex:none;
+  }
+  .layer-count{
+    font-variant-numeric:tabular-nums; font-size:11px; color:var(--muted);
+    background:var(--panel2); padding:2px 7px; border-radius:10px; min-width:26px; text-align:center;
+  }
+  .layer-dl{
+    font-size:11px; padding:5px 8px; border-radius:5px;
+  }
+
+  #zoneInfo{
+    font-size:12px; color:var(--muted); line-height:1.6; margin-top:2px;
+  }
+  #zoneInfo.has-zone{color:var(--text);}
+  #areaWarn{font-size:12px; margin-top:6px; padding:8px 10px; border-radius:6px; display:none;}
+  #areaWarn.warn{display:block; background:rgba(255,207,77,.12); color:var(--warn); border:1px solid rgba(255,207,77,.3);}
+  #areaWarn.danger{display:block; background:rgba(255,92,92,.12); color:var(--danger); border:1px solid rgba(255,92,92,.3);}
+
+  #status{
+    font-size:12px; color:var(--muted); min-height:16px; margin-top:10px; line-height:1.5;
+  }
+  #status.error{color:var(--danger);}
+  #status.ok{color:var(--ok);}
+
+  .spinner{
+    width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent);
+    border-radius:50%; display:inline-block; animation:spin .7s linear infinite; vertical-align:-2px; margin-right:6px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .btn-row{display:flex; gap:8px; margin-top:10px;}
+
+  footer.note{
+    padding:14px 18px 20px; font-size:11px; color:var(--muted); line-height:1.6;
+  }
+  footer.note code{background:var(--panel2); padding:1px 5px; border-radius:4px;}
+
+  .leaflet-container{background:#0a0b0d;}
+  .draw-hint{
+    position:absolute; top:14px; left:14px; z-index:1000; background:rgba(16,18,22,.92);
+    border:1px solid var(--border); color:var(--text); padding:9px 13px; border-radius:8px;
+    font-size:12.5px; display:none; box-shadow:0 4px 18px rgba(0,0,0,.4);
+  }
+  .draw-hint.show{display:block;}
+
+  /* mobile layout: panel becomes a bottom sheet, map fills the rest */
+  @media (max-width: 760px){
+    #app{flex-direction:column;}
+    #map{flex:1; min-height:0;}
+    #panel{
+      width:100%; min-width:0; height:auto; max-height:52vh; border-left:none;
+      border-top:1px solid var(--border);
+      padding-bottom:env(safe-area-inset-bottom, 0px);
+    }
+    header.brand{padding:12px 16px 10px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map">
+    <div class="draw-hint" id="drawHint">Touche/clique deux points sur la carte pour fixer les coins de la zone</div>
+  </div>
+
+  <div id="panel">
+    <header class="brand">
+      <h1>Extracteur géométries OSM</h1>
+      <p>Sélectionne une zone → récupère bâtiments, routes, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D.</p>
+    </header>
+
+    <div class="section">
+      <h2>Localiser</h2>
+      <div class="search-row">
+        <input type="text" id="searchInput" placeholder="Adresse, lieu, ville…">
+        <button id="searchBtn">Aller</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Zone</h2>
+      <button id="drawBtn" class="block primary">Dessiner une zone</button>
+      <div id="zoneInfo">Aucune zone sélectionnée.</div>
+      <div id="areaWarn"></div>
+    </div>
+
+    <div class="section">
+      <h2>Couches à récupérer</h2>
+      <div id="layerList"></div>
+      <div class="btn-row">
+        <button id="fetchBtn" class="primary block" disabled>Récupérer les données</button>
+      </div>
+      <div id="status"></div>
+    </div>
+
+    <footer class="note">
+      Source : OpenStreetMap (Overpass API), licence ODbL. Les hauteurs (<code>height_est_m</code>)
+      sont estimées depuis le tag <code>height</code> ou <code>building:levels</code>×3m à défaut —
+      à vérifier sur les bâtiments qui comptent pour un match caméra précis.
+      Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis du serveur public Overpass.
+    </footer>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  var LAYERS = {
+    buildings:  { label:"Bâtiments",       color:"#4da3ff", filter:function(t){ return !!t.building; } },
+    roads:      { label:"Routes / voies",  color:"#ffd23f", filter:function(t){ return !!t.highway && t.highway!=="street_lamp"; } },
+    lamps:      { label:"Lampadaires",     color:"#ff8a3d", filter:function(t){ return t.highway==="street_lamp"; } },
+    trees:      { label:"Arbres",          color:"#3ddc84", filter:function(t){ return t.natural==="tree"; } },
+    furniture:  { label:"Mobilier urbain", color:"#c792ea", filter:function(t){ return ["bench","waste_basket","drinking_water","bicycle_parking"].indexOf(t.amenity)!==-1; } }
+  };
+
+  var map = L.map('map', { zoomControl:true }).setView([48.8566, 2.3522], 15); // Paris par défaut
+  // tile.openstreetmap.org bloque les requêtes sans Referer correct, et CARTO exige désormais
+  // une clé API -> Esri (pas de clé nécessaire, endpoint public stable) pour le fond de carte.
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom:19,
+    attribution:'&copy; Esri &mdash; Source: Esri, HERE, Garmin, OpenStreetMap contributors'
+  }).addTo(map);
+
+  var drawHint = document.getElementById('drawHint');
+  var zoneInfoEl = document.getElementById('zoneInfo');
+  var areaWarnEl = document.getElementById('areaWarn');
+  var fetchBtn = document.getElementById('fetchBtn');
+  var drawBtn = document.getElementById('drawBtn');
+  var statusEl = document.getElementById('status');
+  var layerListEl = document.getElementById('layerList');
+
+  var drawing = false;
+  var firstPoint = null;
+  var zoneRect = null;
+  var currentBounds = null;
+  var resultLayers = {}; // key -> {fc, leafletLayer}
+
+  // --- build layer checkbox list ---
+  Object.keys(LAYERS).forEach(function(key){
+    var def = LAYERS[key];
+    var row = document.createElement('div');
+    row.className = 'layer-row';
+    row.innerHTML =
+      '<label>' +
+        '<input type="checkbox" id="chk_'+key+'" checked>' +
+        '<span class="swatch" style="background:'+def.color+'"></span>' +
+        '<span>'+def.label+'</span>' +
+      '</label>' +
+      '<span class="layer-count" id="count_'+key+'">–</span>' +
+      '<button class="layer-dl" id="dl_'+key+'" style="display:none">↓</button>';
+    layerListEl.appendChild(row);
+    document.getElementById('dl_'+key).addEventListener('click', function(){ downloadLayer(key); });
+  });
+
+  function selectedLayerKeys(){
+    return Object.keys(LAYERS).filter(function(k){
+      return document.getElementById('chk_'+k).checked;
+    });
+  }
+
+  // --- area / bbox helpers ---
+  function bboxAreaKm2(bounds){
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var R = 6371;
+    var dLat = (ne.lat - sw.lat) * Math.PI/180;
+    var latAvg = (ne.lat + sw.lat)/2 * Math.PI/180;
+    var dLon = (ne.lng - sw.lng) * Math.PI/180;
+    var h = R * dLat;
+    var w = R * dLon * Math.cos(latAvg);
+    return Math.abs(w*h);
+  }
+
+  function updateZoneInfo(){
+    if (!currentBounds){
+      zoneInfoEl.textContent = 'Aucune zone sélectionnée.';
+      zoneInfoEl.classList.remove('has-zone');
+      areaWarnEl.className = '';
+      fetchBtn.disabled = true;
+      return;
+    }
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var area = bboxAreaKm2(currentBounds);
+    zoneInfoEl.classList.add('has-zone');
+    zoneInfoEl.innerHTML =
+      'SO ' + sw.lat.toFixed(5) + ', ' + sw.lng.toFixed(5) + '<br>' +
+      'NE ' + ne.lat.toFixed(5) + ', ' + ne.lng.toFixed(5) + '<br>' +
+      '≈ ' + area.toFixed(3) + ' km²';
+
+    if (area > 5){
+      areaWarnEl.className = 'danger';
+      areaWarnEl.textContent = 'Zone trop grande (>5 km²) — le serveur Overpass public risque de refuser ou d\'être très lent. Réduis la zone.';
+      fetchBtn.disabled = true;
+    } else if (area > 1){
+      areaWarnEl.className = 'warn';
+      areaWarnEl.textContent = 'Zone assez grande (>1 km²) — la requête peut prendre du temps.';
+      fetchBtn.disabled = false;
+    } else {
+      areaWarnEl.className = '';
+      fetchBtn.disabled = false;
+    }
+  }
+
+  // --- draw a zone: tap/click two corners ---
+  drawBtn.addEventListener('click', function(){
+    drawing = true;
+    firstPoint = null;
+    if (zoneRect){ map.removeLayer(zoneRect); zoneRect = null; }
+    drawHint.classList.add('show');
+    map.getContainer().style.cursor = 'crosshair';
+  });
+
+  map.on('click', function(e){
+    if (!drawing) return;
+    if (!firstPoint){
+      firstPoint = e.latlng;
+      return;
+    }
+    var bounds = L.latLngBounds(firstPoint, e.latlng);
+    if (zoneRect) map.removeLayer(zoneRect);
+    zoneRect = L.rectangle(bounds, { color:'#ff8a3d', weight:2, fillOpacity:.08 }).addTo(map);
+    currentBounds = bounds;
+    drawing = false;
+    firstPoint = null;
+    drawHint.classList.remove('show');
+    map.getContainer().style.cursor = '';
+    updateZoneInfo();
+  });
+
+  // --- search / geocode (Nominatim) ---
+  document.getElementById('searchBtn').addEventListener('click', doSearch);
+  document.getElementById('searchInput').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') doSearch();
+  });
+  function doSearch(){
+    var q = document.getElementById('searchInput').value.trim();
+    if (!q) return;
+    setStatus('Recherche de "'+q+'"…', false);
+    fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q))
+      .then(function(r){ return r.json(); })
+      .then(function(results){
+        if (!results.length){ setStatus('Lieu introuvable.', true); return; }
+        var r = results[0];
+        map.setView([parseFloat(r.lat), parseFloat(r.lon)], 16);
+        setStatus('', false);
+      })
+      .catch(function(err){ setStatus('Erreur de recherche : ' + err.message, true); });
+  }
+
+  // --- overpass query + fetch ---
+  fetchBtn.addEventListener('click', function(){
+    if (!currentBounds) return;
+    var keys = selectedLayerKeys();
+    if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
+
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
+
+    var parts = [];
+    if (keys.indexOf('buildings') !== -1) parts.push('way["building"](' + bbox + ');');
+    if (keys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
+    if (keys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
+    if (keys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
+    if (keys.indexOf('furniture') !== -1) parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
+
+    var query = '[out:json][timeout:60];(' + parts.join('') + ');out geom;';
+
+    fetchBtn.disabled = true;
+    setStatus('<span class="spinner"></span>Interrogation d\'Overpass…', false, true);
+
+    // clear previous preview layers
+    Object.keys(resultLayers).forEach(function(k){
+      if (resultLayers[k].leafletLayer) map.removeLayer(resultLayers[k].leafletLayer);
+    });
+    resultLayers = {};
+    Object.keys(LAYERS).forEach(function(k){
+      document.getElementById('count_'+k).textContent = '–';
+      document.getElementById('dl_'+k).style.display = 'none';
+    });
+
+    var OVERPASS_MIRRORS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter'
+    ];
+
+    function fetchFromMirrors(mirrors, body, lastErr){
+      if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
+      var url = mirrors[0];
+      setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'data=' + encodeURIComponent(body)
+      })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
+        return r.json();
+      })
+      .catch(function(err){
+        return fetchFromMirrors(mirrors.slice(1), body, err);
+      });
+    }
+
+    fetchFromMirrors(OVERPASS_MIRRORS, query)
+    .then(function(data){
+      var elements = data.elements || [];
+      keys.forEach(function(key){
+        var def = LAYERS[key];
+        var fc = elementsToGeoJSON(elements, def.filter);
+        resultLayers[key] = { fc: fc };
+        document.getElementById('count_'+key).textContent = fc.features.length;
+        if (fc.features.length){
+          document.getElementById('dl_'+key).style.display = 'inline-block';
+          var lyr = L.geoJSON(fc, {
+            style: function(){ return { color: def.color, weight:2, fillOpacity:.25 }; },
+            pointToLayer: function(feature, latlng){
+              return L.circleMarker(latlng, { radius:4, color:def.color, fillColor:def.color, fillOpacity:.9, weight:1 });
+            }
+          }).addTo(map);
+          resultLayers[key].leafletLayer = lyr;
+        }
+      });
+      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
+      setStatus(total + ' géométries récupérées.', false);
+      statusEl.classList.add('ok');
+      fetchBtn.disabled = false;
+    })
+    .catch(function(err){
+      setStatus('Échec Overpass : ' + err.message + ' (réessaie, ou réduis la zone)', true);
+      fetchBtn.disabled = false;
+    });
+  });
+
+  function elementsToGeoJSON(elements, filterFn){
+    var features = [];
+    for (var i=0; i<elements.length; i++){
+      var el = elements[i];
+      var tags = el.tags || {};
+      if (!filterFn(tags)) continue;
+
+      var geometry;
+      if (el.type === 'node'){
+        geometry = { type:'Point', coordinates:[el.lon, el.lat] };
+      } else if (el.type === 'way' && el.geometry){
+        var coords = el.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+        if (coords.length < 2) continue;
+        var closed = coords.length > 2 &&
+          coords[0][0] === coords[coords.length-1][0] &&
+          coords[0][1] === coords[coords.length-1][1];
+        if (closed && tags.building){
+          geometry = { type:'Polygon', coordinates:[coords] };
+        } else {
+          geometry = { type:'LineString', coordinates: coords };
+        }
+      } else {
+        continue;
+      }
+
+      var props = { osm_id: el.id, osm_type: el.type };
+      Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
+      if (tags.building){
+        var h = null;
+        if (tags.height) h = parseFloat(tags.height);
+        else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
+        props.height_est_m = (h && !isNaN(h)) ? h : 9;
+      }
+
+      features.push({ type:'Feature', geometry: geometry, properties: props });
+    }
+    return { type:'FeatureCollection', features: features };
+  }
+
+  function downloadLayer(key){
+    var entry = resultLayers[key];
+    if (!entry || !entry.fc.features.length) return;
+    var blob = new Blob([JSON.stringify(entry.fc)], { type:'application/geo+json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = key + '.geojson';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  }
+
+  function setStatus(html, isError){
+    statusEl.classList.remove('error','ok');
+    statusEl.innerHTML = html;
+    if (isError) statusEl.classList.add('error');
+  }
+
+  updateZoneInfo();
+})();
+</script>
+</body>
+</html>
