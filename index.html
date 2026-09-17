@@ -672,6 +672,118 @@
     return { shape: shape, outerPts: outerPts };
   }
 
+  // --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented
+  // bounding box (OABB) — robust for any polygon shape (convex or not), and geometrically exact
+  // for rectangular footprints, which is the large majority of real buildings.
+  function normalize2(v){
+    var len = Math.hypot(v.x, v.z);
+    return len > 1e-9 ? { x:v.x/len, z:v.z/len } : { x:0, z:0 };
+  }
+
+  function convexHull2(points){
+    var pts = points.slice().sort(function(a,b){ return a.x - b.x || a.z - b.z; });
+    if (pts.length <= 2) return pts;
+    function cross(o,a,b){ return (a.x-o.x)*(b.z-o.z) - (a.z-o.z)*(b.x-o.x); }
+    var lower = [];
+    for (var i=0;i<pts.length;i++){
+      while (lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], pts[i]) <= 0) lower.pop();
+      lower.push(pts[i]);
+    }
+    var upper = [];
+    for (var j=pts.length-1;j>=0;j--){
+      while (upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], pts[j]) <= 0) upper.pop();
+      upper.push(pts[j]);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  // minimum-area oriented bounding box via rotating calipers over the convex hull
+  function computeOABB(points){
+    var hull = convexHull2(points.map(function(p){ return {x:p.x, z:p.y}; }));
+    if (hull.length < 2){
+      return { center:{x:0,z:0}, axisLong:{x:1,z:0}, axisShort:{x:0,z:1}, lengthLong:1, lengthShort:1 };
+    }
+    var best = null;
+    for (var i=0; i<hull.length; i++){
+      var a = hull[i], b = hull[(i+1)%hull.length];
+      var edge = normalize2({ x:b.x-a.x, z:b.z-a.z });
+      if (edge.x === 0 && edge.z === 0) continue;
+      var perp = { x:-edge.z, z:edge.x };
+      var minE=Infinity, maxE=-Infinity, minP=Infinity, maxP=-Infinity;
+      hull.forEach(function(p){
+        var e = p.x*edge.x + p.z*edge.z;
+        var pr = p.x*perp.x + p.z*perp.z;
+        if (e<minE) minE=e; if (e>maxE) maxE=e;
+        if (pr<minP) minP=pr; if (pr>maxP) maxP=pr;
+      });
+      var w = maxE-minE, h = maxP-minP, area = w*h;
+      if (!best || area < best.area){
+        var cE=(minE+maxE)/2, cP=(minP+maxP)/2;
+        best = {
+          area: area,
+          center: { x: edge.x*cE + perp.x*cP, z: edge.z*cE + perp.z*cP },
+          edgeDir: edge, perpDir: perp, edgeLen: w, perpLen: h
+        };
+      }
+    }
+    if (!best) return { center:{x:0,z:0}, axisLong:{x:1,z:0}, axisShort:{x:0,z:1}, lengthLong:1, lengthShort:1 };
+    var edgeIsLong = best.edgeLen >= best.perpLen;
+    return {
+      center: best.center,
+      axisLong: edgeIsLong ? best.edgeDir : best.perpDir,
+      axisShort: edgeIsLong ? best.perpDir : best.edgeDir,
+      lengthLong: Math.max(best.edgeLen, best.perpLen),
+      lengthShort: Math.min(best.edgeLen, best.perpLen)
+    };
+  }
+
+  function buildPitchedRoofGeometry(outerPts, wallH, roofH, roofShape){
+    var oabb = computeOABB(outerPts);
+    var L = Math.max(oabb.lengthLong, 0.5), W = Math.max(oabb.lengthShort, 0.5);
+    var ax = oabb.axisLong, ay = oabb.axisShort, c = oabb.center;
+
+    function pt(sLong, sShort, y){
+      return {
+        x: c.x + ax.x*(sLong*L/2) + ay.x*(sShort*W/2),
+        y: y,
+        z: c.z + ax.z*(sLong*L/2) + ay.z*(sShort*W/2)
+      };
+    }
+
+    var w00 = pt(-1,-1,wallH), w10 = pt(1,-1,wallH), w11 = pt(1,1,wallH), w01 = pt(-1,1,wallH);
+    var topY = wallH + roofH;
+    var positions = [];
+    function tri(p1,p2,p3){ positions.push(p1.x,p1.y,p1.z, p2.x,p2.y,p2.z, p3.x,p3.y,p3.z); }
+    function quad(p1,p2,p3,p4){ tri(p1,p2,p3); tri(p1,p3,p4); }
+
+    if (roofShape === 'skillion'){
+      var hi1 = pt(1,1,topY), hi0 = pt(-1,1,topY);
+      quad(w00, w10, hi1, hi0);
+    } else if (roofShape === 'gabled'){
+      var r0 = pt(-1,0,topY), r1 = pt(1,0,topY);
+      quad(w00, w10, r1, r0);
+      quad(r0, r1, w11, w01);
+      tri(w10, w11, r1);
+      tri(w01, w00, r0);
+    } else {
+      // hipped / pyramidal / default non-flat fallback: ridge collapses to a point when
+      // roofShape is explicitly "pyramidal" (single apex), otherwise its natural L-W length.
+      var ridgeLen = (roofShape === 'pyramidal') ? 0 : Math.max(0, L - W);
+      var hr0 = { x:c.x+ax.x*(-ridgeLen/2), y:topY, z:c.z+ax.z*(-ridgeLen/2) };
+      var hr1 = { x:c.x+ax.x*( ridgeLen/2), y:topY, z:c.z+ax.z*( ridgeLen/2) };
+      quad(w00, w10, hr1, hr0);
+      quad(hr0, hr1, w11, w01);
+      tri(w10, w11, hr1);
+      tri(w01, w00, hr0);
+    }
+
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
   function buildBuildingMesh(geom, props, mat, center){
     var built = ringsToShape(geom.coordinates, center);
     if (!built) return null;
@@ -688,22 +800,12 @@
     group.add(new THREE.Mesh(wallGeom, mat));
 
     if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
-      // simplified pyramidal-cap approximation for any non-flat roof:shape — real per-type
-      // roof geometry (ridge lines for gabled, hip planes...) is out of scope for a draft tool.
-      var outerPts = built.outerPts;
-      var cx = 0, cz = 0;
-      outerPts.forEach(function(p){ cx += p.x; cz += p.y; });
-      cx /= outerPts.length; cz /= outerPts.length;
-
-      var positions = [];
-      for (var i=0; i<outerPts.length; i++){
-        var p1 = outerPts[i], p2 = outerPts[(i+1)%outerPts.length];
-        positions.push(p1.x, wallH, p1.y,  p2.x, wallH, p2.y,  cx, wallH+roofH, cz);
-      }
-      var roofGeom = new THREE.BufferGeometry();
-      roofGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      roofGeom.computeVertexNormals();
-      var roofMat = new THREE.MeshStandardMaterial({ color: mat.color.clone().multiplyScalar(0.75), roughness:0.9 });
+      // OABB-derived hip/gable/skillion/pyramidal roof — mansard/gambrel/dome/other exotic
+      // roof:shape values fall back to the hip-roof branch (closest generic pitched approximation).
+      var roofGeom = buildPitchedRoofGeometry(built.outerPts, wallH, roofH, props.roof_shape);
+      var roofMat = new THREE.MeshStandardMaterial({
+        color: mat.color.clone().multiplyScalar(0.75), roughness:0.9, side:THREE.DoubleSide
+      });
       group.add(new THREE.Mesh(roofGeom, roofMat));
     }
     return group;
@@ -941,6 +1043,9 @@
 "# Limitation connue : les cours interieures des batiments (trous / multipolygones avec \"inner\")",
 "# ne sont pas evidees ici (l'apercu web les gere visuellement, pas cet export) -- seul le contour",
 "# exterieur est extrude. A ameliorer plus tard si besoin (necessite un modifier Boolean par trou).",
+"# Toits (roof:shape != flat) : construits depuis le rectangle englobant oriente (OABB) du contour,",
+"# exact pour un batiment rectangulaire, approximation raisonnable sinon -- meme methode que",
+"# l'apercu 3D navigateur, pour rester coherent visuellement entre les deux.",
 "",
 "import bpy, bmesh, json, math, os",
 "",
@@ -1017,6 +1122,124 @@
 "    collection.objects.link(obj)",
 "",
 "",
+"# --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented",
+"# bounding box (OABB) -- same method as the browser 3D preview, kept in sync for consistency.",
+"",
+"def normalize2(v):",
+"    length = math.hypot(v[0], v[1])",
+"    return (v[0] / length, v[1] / length) if length > 1e-9 else (0.0, 0.0)",
+"",
+"",
+"def convex_hull2(points):",
+"    pts = sorted(set(points))",
+"    if len(pts) <= 2:",
+"        return pts",
+"",
+"    def cross(o, a, b):",
+"        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])",
+"",
+"    lower = []",
+"    for p in pts:",
+"        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:",
+"            lower.pop()",
+"        lower.append(p)",
+"    upper = []",
+"    for p in reversed(pts):",
+"        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:",
+"            upper.pop()",
+"        upper.append(p)",
+"    return lower[:-1] + upper[:-1]",
+"",
+"",
+"def compute_oabb(points):",
+"    hull = convex_hull2(points)",
+"    if len(hull) < 2:",
+"        return {\"center\": (0.0, 0.0), \"axis_long\": (1.0, 0.0), \"axis_short\": (0.0, 1.0),",
+"                \"length_long\": 1.0, \"length_short\": 1.0}",
+"    best = None",
+"    n = len(hull)",
+"    for i in range(n):",
+"        a, b = hull[i], hull[(i + 1) % n]",
+"        edge = normalize2((b[0] - a[0], b[1] - a[1]))",
+"        if edge == (0.0, 0.0):",
+"            continue",
+"        perp = (-edge[1], edge[0])",
+"        min_e = min_p = float(\"inf\")",
+"        max_e = max_p = float(\"-inf\")",
+"        for p in hull:",
+"            e = p[0] * edge[0] + p[1] * edge[1]",
+"            pr = p[0] * perp[0] + p[1] * perp[1]",
+"            min_e, max_e = min(min_e, e), max(max_e, e)",
+"            min_p, max_p = min(min_p, pr), max(max_p, pr)",
+"        w, h = max_e - min_e, max_p - min_p",
+"        area = w * h",
+"        if best is None or area < best[\"area\"]:",
+"            c_e, c_p = (min_e + max_e) / 2, (min_p + max_p) / 2",
+"            best = {",
+"                \"area\": area,",
+"                \"center\": (edge[0] * c_e + perp[0] * c_p, edge[1] * c_e + perp[1] * c_p),",
+"                \"edge_dir\": edge, \"perp_dir\": perp, \"edge_len\": w, \"perp_len\": h,",
+"            }",
+"    edge_is_long = best[\"edge_len\"] >= best[\"perp_len\"]",
+"    return {",
+"        \"center\": best[\"center\"],",
+"        \"axis_long\": best[\"edge_dir\"] if edge_is_long else best[\"perp_dir\"],",
+"        \"axis_short\": best[\"perp_dir\"] if edge_is_long else best[\"edge_dir\"],",
+"        \"length_long\": max(best[\"edge_len\"], best[\"perp_len\"]),",
+"        \"length_short\": min(best[\"edge_len\"], best[\"perp_len\"]),",
+"    }",
+"",
+"",
+"def build_pitched_roof(name, outer_pts, wall_h, roof_h, roof_shape, collection):",
+"    oabb = compute_oabb(outer_pts)",
+"    L = max(oabb[\"length_long\"], 0.5)",
+"    W = max(oabb[\"length_short\"], 0.5)",
+"    ax, ay, c = oabb[\"axis_long\"], oabb[\"axis_short\"], oabb[\"center\"]",
+"    top_y = wall_h + roof_h",
+"",
+"    def pt(s_long, s_short, y):",
+"        return (c[0] + ax[0] * (s_long * L / 2) + ay[0] * (s_short * W / 2),",
+"                c[1] + ax[1] * (s_long * L / 2) + ay[1] * (s_short * W / 2),",
+"                y)",
+"",
+"    w00, w10, w11, w01 = pt(-1, -1, wall_h), pt(1, -1, wall_h), pt(1, 1, wall_h), pt(-1, 1, wall_h)",
+"",
+"    faces_verts = []",
+"    if roof_shape == \"skillion\":",
+"        hi1, hi0 = pt(1, 1, top_y), pt(-1, 1, top_y)",
+"        faces_verts.append((w00, w10, hi1, hi0))",
+"    elif roof_shape == \"gabled\":",
+"        r0, r1 = pt(-1, 0, top_y), pt(1, 0, top_y)",
+"        faces_verts.append((w00, w10, r1, r0))",
+"        faces_verts.append((r0, r1, w11, w01))",
+"        faces_verts.append((w10, w11, r1))",
+"        faces_verts.append((w01, w00, r0))",
+"    else:",
+"        # hipped / pyramidal / other non-flat roof:shape values (mansard, gambrel, dome...) fall",
+"        # back to this hip-roof branch as the closest generic pitched approximation.",
+"        ridge_len = 0.0 if roof_shape == \"pyramidal\" else max(0.0, L - W)",
+"        hr0 = (c[0] + ax[0] * (-ridge_len / 2), c[1] + ax[1] * (-ridge_len / 2), top_y)",
+"        hr1 = (c[0] + ax[0] * (ridge_len / 2), c[1] + ax[1] * (ridge_len / 2), top_y)",
+"        faces_verts.append((w00, w10, hr1, hr0))",
+"        faces_verts.append((hr0, hr1, w11, w01))",
+"        faces_verts.append((w10, w11, hr1))",
+"        faces_verts.append((w01, w00, hr0))",
+"",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    for fv in faces_verts:",
+"        verts = [bm.verts.new(p) for p in fv]",
+"        try:",
+"            bm.faces.new(verts)",
+"        except ValueError:",
+"            pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    collection.objects.link(obj)",
+"",
+"",
 "def add_building(name, feature, collection):",
 "    outer_pts = ring_to_local(feature[\"geometry\"][\"coordinates\"][0])",
 "    if len(outer_pts) < 3:",
@@ -1047,23 +1270,7 @@
 "    collection.objects.link(obj)",
 "",
 "    if roof_h > 0.2 and roof_shape and roof_shape != \"flat\":",
-"        # simplified pyramidal-cap approximation (ridge/hip roofs are not modeled per-type)",
-"        cx = sum(p[0] for p in outer_pts) / len(outer_pts)",
-"        cz = sum(p[1] for p in outer_pts) / len(outer_pts)",
-"        roof_mesh = bpy.data.meshes.new(name + \"_roof\")",
-"        rbm = bmesh.new()",
-"        apex = rbm.verts.new((cx, cz, wall_h + roof_h))",
-"        ring_verts = [rbm.verts.new((x, z, wall_h)) for (x, z) in outer_pts]",
-"        n = len(ring_verts)",
-"        for i in range(n):",
-"            try:",
-"                rbm.faces.new((ring_verts[i], ring_verts[(i + 1) % n], apex))",
-"            except ValueError:",
-"                pass",
-"        rbm.to_mesh(roof_mesh)",
-"        rbm.free()",
-"        robj = bpy.data.objects.new(name + \"_roof\", roof_mesh)",
-"        collection.objects.link(robj)",
+"        build_pitched_roof(name, outer_pts, wall_h, roof_h, roof_shape, collection)",
 "",
 "",
 "def add_flat_area(name, feature, z, collection):",
