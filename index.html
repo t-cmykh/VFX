@@ -169,6 +169,28 @@
     </div>
 
     <div class="section">
+      <h2>Cesium Ion (optionnel)</h2>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkIon">
+          <span>Terrain + bâtiments mondiaux</span>
+        </label>
+      </div>
+      <div class="search-row" style="margin-top:8px;">
+        <input type="text" id="ionKeyInput" placeholder="Clé API Cesium Ion…" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="ionStatus" style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5;">
+        Désactivé par défaut — l'outil reste 100% sans compte/clé. Coché
+        + une clé valide : Cesium World Terrain (relief mondial réel) et
+        Cesium OSM Buildings (bâtiments 3D du monde entier) s'ajoutent au
+        globe, hors de ta zone comme dedans (peut se superposer à nos
+        propres bâtiments extraits dans la zone — normal, c'est la même
+        source OSM vue par deux pipelines différents). Pas de clé ?
+        <a href="#" id="ionHelpLink" style="color:var(--accent);">comment en obtenir une</a>.
+      </div>
+    </div>
+
+    <div class="section">
       <h2>Couches à récupérer</h2>
       <div id="layerList"></div>
       <div class="btn-row">
@@ -275,10 +297,11 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     : Promise.resolve();
 
   // --- Cesium globe: replaces the old Leaflet 2D map + separate Three.js "Vue 3D" panel with a
-  // single view that draws the zone AND shows the fetched geometry in 3D. No Cesium Ion token —
-  // Ion-hosted assets (World Terrain, Bing imagery, 3D Tiles) are deliberately not used, only the
-  // open-source Cesium *engine* plus our own Esri/OSM/IGN sources (same ones the old Leaflet map
-  // used), so nothing here needs a paid/quota-limited API key.
+  // single view that draws the zone AND shows the fetched geometry in 3D. No Cesium Ion token by
+  // default — Ion-hosted assets (World Terrain, OSM Buildings) are opt-in only (see the "Cesium
+  // Ion" panel section below), the tool stays 100% account/key-free unless the user explicitly
+  // pastes their own Ion key. Only the open-source Cesium *engine* plus our own Esri/OSM/IGN
+  // sources (same ones the old Leaflet map used) are active by default.
   var viewer = new Cesium.Viewer('cesiumContainer', {
     baseLayerPicker:false, baseLayer:false, terrainProvider:new Cesium.EllipsoidTerrainProvider(),
     geocoder:false, homeButton:false, sceneModePicker:false, navigationHelpButton:false,
@@ -317,6 +340,86 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
   var exportAbcBtn = document.getElementById('exportAbcBtn');
   var exportOrthoBtn = document.getElementById('exportOrthoBtn');
   var exportGlbBtn = document.getElementById('exportGlbBtn');
+
+  // --- optional Cesium Ion assets (World Terrain + OSM Buildings) — off by default, the whole
+  // point of keeping the tool key-free unless the user explicitly opts in with their own token.
+  var chkIon = document.getElementById('chkIon');
+  var ionKeyInput = document.getElementById('ionKeyInput');
+  var ionStatusEl = document.getElementById('ionStatus');
+  var ionStatusDefaultHtml = ionStatusEl.innerHTML;
+  var ionHelpLink = document.getElementById('ionHelpLink');
+  var ionOsmBuildingsTileset = null;
+  var ionTerrainActive = false; // true once World Terrain is actually the live terrainProvider
+
+  var savedIonKey = null;
+  try { savedIonKey = localStorage.getItem('cesium_ion_key'); } catch(e){}
+  if (savedIonKey) ionKeyInput.value = savedIonKey;
+
+  ionHelpLink.addEventListener('click', function(e){
+    e.preventDefault();
+    ionStatusEl.innerHTML =
+      '1) Crée un compte gratuit sur <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener" style="color:var(--accent);">ion.cesium.com/signup</a> (email + mot de passe, aucune carte bancaire).<br>' +
+      '2) Une fois connecté : menu <b>Access Tokens</b> (icône clé, en haut à droite) → le token <b>Default Token</b> existe déjà, copie-le (bouton copier).<br>' +
+      '3) Colle-le dans le champ ci-dessus, coche la case, c\'est tout — le tier gratuit (Community) suffit largement pour cet usage occasionnel.<br>' +
+      '<a href="#" id="ionHelpBack" style="color:var(--accent);">← retour</a>';
+    document.getElementById('ionHelpBack').addEventListener('click', function(e2){
+      e2.preventDefault();
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+    });
+  });
+
+  function removeIonAssets(){
+    if (ionOsmBuildingsTileset){ viewer.scene.primitives.remove(ionOsmBuildingsTileset); ionOsmBuildingsTileset = null; }
+    viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
+    viewer.scene.globe.depthTestAgainstTerrain = false;
+    ionTerrainActive = false;
+  }
+
+  function applyIonAssets(){
+    var key = ionKeyInput.value.trim();
+    if (!key){ chkIon.checked = false; return Promise.resolve(); }
+    try { localStorage.setItem('cesium_ion_key', key); } catch(e){}
+    Cesium.Ion.defaultAccessToken = key;
+    ionStatusEl.textContent = 'Chargement du terrain + bâtiments Cesium Ion…';
+
+    return Promise.all([
+      Cesium.createWorldTerrainAsync(),
+      Cesium.createOsmBuildingsAsync()
+    ]).then(function(results){
+      viewer.terrainProvider = results[0];
+      viewer.scene.globe.depthTestAgainstTerrain = true;
+      ionTerrainActive = true;
+      if (ionOsmBuildingsTileset) viewer.scene.primitives.remove(ionOsmBuildingsTileset);
+      ionOsmBuildingsTileset = viewer.scene.primitives.add(results[1]);
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+      // if a zone is already fetched and shown, rebuild it so it sits on the real terrain height
+      // instead of the ellipsoid (see sampleGroundHeight below) rather than floating/sinking.
+      if (fetchBounds) return showZoneModel();
+    })
+    .catch(function(err){
+      chkIon.checked = false;
+      removeIonAssets();
+      var errMsg = (err && err.message) || (err && err.toString && err.toString()) || 'erreur inconnue';
+      ionStatusEl.innerHTML = '<span style="color:var(--danger);">Échec (clé invalide ou quota dépassé) : ' + errMsg + '</span> — repasse en survol pour revoir comment obtenir une clé.';
+    });
+  }
+
+  chkIon.addEventListener('change', function(){
+    if (chkIon.checked) applyIonAssets();
+    else { removeIonAssets(); if (fetchBounds) showZoneModel(); }
+  });
+
+  // returns a Promise<number> (meters, ellipsoid height) — real sampled terrain height when Ion
+  // World Terrain is active, 0 otherwise (our own zone geometry is already terrain-draped via IGN
+  // relief when that's checked; this is only about where the WHOLE model sits on Cesium's global
+  // terrain, a separate, coarser surface).
+  function sampleGroundHeight(lat, lng){
+    if (!ionTerrainActive) return Promise.resolve(0);
+    var carto = Cesium.Cartographic.fromDegrees(lng, lat);
+    return Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto])
+      .then(function(sampled){ return sampled[0].height || 0; })
+      .catch(function(){ return 0; });
+  }
 
   // drop-in replacement for L.latLngBounds(...) — every fetch/WFS/WMS/elevation function below
   // reads bounds exclusively through these three methods, so nothing downstream of zone selection
@@ -1618,18 +1721,22 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     var ground = buildGroundMeshDesc(center, extentX, extentZ, orthoBytes);
     var allMeshes = meshes.concat([ground]);
 
-    return buildGlbBinary(allMeshes, orthoBytes).then(function(glbBytes){
+    return Promise.all([
+      buildGlbBinary(allMeshes, orthoBytes),
+      sampleGroundHeight(center.lat, center.lng) // 0 unless Cesium Ion World Terrain is active
+    ]).then(function(results){
+      var glbBytes = results[0], groundHeight = results[1];
       window.__lastGlb = glbBytes; // reused by the download button — same bytes, no rebuild
       if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
       var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
       var url = URL.createObjectURL(blob);
       return Cesium.Model.fromGltfAsync({
         url: url,
-        modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(center.lng, center.lat, 0))
+        modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(center.lng, center.lat, groundHeight))
       }).then(function(model){
         URL.revokeObjectURL(url);
         currentModelPrimitive = viewer.scene.primitives.add(model);
-        recenterZoneCamera(center, extentX, extentZ);
+        recenterZoneCamera(center, extentX, extentZ, groundHeight);
       }).catch(function(err){
         URL.revokeObjectURL(url);
         setStatus('Échec affichage 3D : ' + err.message, true);
@@ -1639,9 +1746,9 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     });
   }
 
-  function recenterZoneCamera(center, extentX, extentZ){
+  function recenterZoneCamera(center, extentX, extentZ, groundHeight){
     var dist = Math.max(extentX, extentZ, 60);
-    var originECEF = Cesium.Cartesian3.fromDegrees(center.lng, center.lat, 0);
+    var originECEF = Cesium.Cartesian3.fromDegrees(center.lng, center.lat, groundHeight||0);
     var enu = Cesium.Transforms.eastNorthUpToFixedFrame(originECEF);
     var camLocal = Cesium.Cartesian3.fromElements(dist*0.5, -dist*0.5, dist*0.55); // (east, north-negative-ish, up) offset
     var camWorld = Cesium.Matrix4.multiplyByPoint(enu, camLocal, new Cesium.Cartesian3());
@@ -1659,7 +1766,9 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
     var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
     var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
-    recenterZoneCamera(center, extentX, extentZ);
+    sampleGroundHeight(center.lat, center.lng).then(function(groundHeight){
+      recenterZoneCamera(center, extentX, extentZ, groundHeight);
+    });
   });
 
   // --- export .OBJ ---
