@@ -176,16 +176,27 @@
           <span>Terrain + bâtiments mondiaux</span>
         </label>
       </div>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkGoogleTiles">
+          <span>Bâtiments photoréalistes Google (aperçu seul, jamais exporté)</span>
+        </label>
+      </div>
       <div class="search-row" style="margin-top:8px;">
         <input type="text" id="ionKeyInput" placeholder="Clé API Cesium Ion…" autocomplete="off" spellcheck="false">
       </div>
       <div id="ionStatus" style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5;">
-        Désactivé par défaut — l'outil reste 100% sans compte/clé. Coché
-        + une clé valide : Cesium World Terrain (relief mondial réel) et
-        Cesium OSM Buildings (bâtiments 3D du monde entier) s'ajoutent au
-        globe, hors de ta zone comme dedans (peut se superposer à nos
-        propres bâtiments extraits dans la zone — normal, c'est la même
-        source OSM vue par deux pipelines différents). Pas de clé ?
+        Désactivé par défaut — l'outil reste 100% sans compte/clé, les deux
+        cases utilisent la même clé Ion. <b>Terrain + bâtiments mondiaux</b> :
+        Cesium World Terrain (relief mondial réel) + Cesium OSM Buildings
+        (extrusions simples, dérivées d'OSM comme notre propre pipeline —
+        peut se superposer à nos bâtiments dans la zone, normal).
+        <b>Bâtiments photoréalistes Google</b> : vrai maillage photogrammétrique
+        (3D Tiles), quota gratuit inclus dans le tier Ion Community — mais
+        affiché uniquement dans ce visualiseur, jamais inclus dans le
+        <code>.glb</code>/<code>.OBJ</code> téléchargé (droits de réutilisation
+        hors-ligne pas clairement couverts par les CGU Google — repère visuel
+        seulement, pas un asset à exporter). Pas de clé ?
         <a href="#" id="ionHelpLink" style="color:var(--accent);">comment en obtenir une</a>.
       </div>
     </div>
@@ -407,6 +418,48 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
   chkIon.addEventListener('change', function(){
     if (chkIon.checked) applyIonAssets();
     else { removeIonAssets(); if (fetchBounds) showZoneModel(); }
+  });
+
+  // --- Google Photorealistic 3D Tiles — resolved through the SAME Cesium Ion key above (Ion asset
+  // 2275207, confirmed by inspecting the actual network request createGooglePhotorealistic3DTileset()
+  // makes: it calls api.cesium.com/v1/assets/2275207/endpoint with Cesium.Ion.defaultAccessToken —
+  // no separate Google Maps Platform key/billing account needed, the Community Ion tier includes a
+  // free monthly quota). Deliberately kept OUT of the export pipeline: buildZoneMeshes/buildGlbBinary/
+  // buildObjText only ever read from resultLayers (our own fetched OSM/IGN data) — this tileset lives
+  // solely in viewer.scene.primitives, a preview-only reference layer, never touched by any export
+  // function. Google's Tile API Policies don't clearly cover offline caching/export of these tiles
+  // (checked earlier), so baking them into a downloadable .glb/.OBJ would be a real ToS grey area —
+  // this stays strictly "look, don't take".
+  var chkGoogleTiles = document.getElementById('chkGoogleTiles');
+  var googleTilesetPrimitive = null;
+
+  function removeGoogleTileset(){
+    if (googleTilesetPrimitive){ viewer.scene.primitives.remove(googleTilesetPrimitive); googleTilesetPrimitive = null; }
+  }
+
+  function applyGoogleTileset(){
+    var key = ionKeyInput.value.trim();
+    if (!key){ chkGoogleTiles.checked = false; return Promise.resolve(); }
+    try { localStorage.setItem('cesium_ion_key', key); } catch(e){}
+    Cesium.Ion.defaultAccessToken = key;
+    ionStatusEl.textContent = 'Chargement des bâtiments photoréalistes Google…';
+
+    return Cesium.createGooglePhotorealistic3DTileset().then(function(tileset){
+      removeGoogleTileset();
+      googleTilesetPrimitive = viewer.scene.primitives.add(tileset);
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+    })
+    .catch(function(err){
+      chkGoogleTiles.checked = false;
+      removeGoogleTileset();
+      var errMsg = (err && err.message) || (err && err.toString && err.toString()) || 'erreur inconnue';
+      ionStatusEl.innerHTML = '<span style="color:var(--danger);">Échec bâtiments Google (clé invalide ou quota dépassé) : ' + errMsg + '</span> — repasse en survol pour revoir comment obtenir une clé.';
+    });
+  }
+
+  chkGoogleTiles.addEventListener('change', function(){
+    if (chkGoogleTiles.checked) applyGoogleTileset();
+    else removeGoogleTileset();
   });
 
   // returns a Promise<number> (meters, ellipsoid height) — real sampled terrain height when Ion
