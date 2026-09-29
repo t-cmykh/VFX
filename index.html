@@ -1001,14 +1001,30 @@
     return pts.length >= 3 ? pts : null;
   }
 
+  // THREE.Shape/ExtrudeGeometry/ShapeGeometry (walls, flat areas) live in an XY plane that gets
+  // folded into world XZ via rotateX(-Math.PI/2) elsewhere — that specific rotation maps
+  // shape-Y -> world (-Z), not world Z. `shape` below is built with Y negated to compensate, so
+  // it lands at the correct world Z after that rotation. `outerPts`/`holePtsList` are kept in
+  // true (worldX, worldZ) — unrotated — because the roof functions (buildHipRoofSkeleton,
+  // buildPyramidalRoofGeometry, buildOABBRoofGeometry, buildHipRoofHeightfield) consume them
+  // directly as (x,z) with no rotation at all. Before this fix both were built from the same
+  // (worldX, worldZ) points and only outerPts's consumers were correct — every wall and every
+  // flat area (water/vegetation) rendered mirrored on Z relative to its own roof, the roads,
+  // the terrain and the orthophoto (empirically verified via ExtrudeGeometry bbox + face-normal
+  // inspection: negating only the shape's Y here is the one combination that fixes position
+  // *and* keeps the extrude's outward-facing winding correct — rotating the other way or
+  // negating depth instead each fix position but flip the wall faces inside-out).
   function ringsToShape(coordinates, center){
     var outerPts = polygonRingToPoints(coordinates[0], center);
     if (!outerPts) return null;
-    var shape = new THREE.Shape(outerPts);
+    var shape = new THREE.Shape(outerPts.map(function(p){ return new THREE.Vector2(p.x, -p.y); }));
     var holePtsList = [];
     coordinates.slice(1).forEach(function(ring){
       var holePts = polygonRingToPoints(ring, center);
-      if (holePts){ shape.holes.push(new THREE.Path(holePts)); holePtsList.push(holePts); }
+      if (holePts){
+        shape.holes.push(new THREE.Path(holePts.map(function(p){ return new THREE.Vector2(p.x, -p.y); })));
+        holePtsList.push(holePts);
+      }
     });
     return { shape: shape, outerPts: outerPts, holePtsList: holePtsList };
   }
