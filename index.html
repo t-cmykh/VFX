@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>Extracteur géométries OSM — layout VFX</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link href="https://unpkg.com/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>
   :root{
     --bg:#0e1013; --panel:#161920; --panel2:#1d212b; --border:#2a2f3a;
@@ -19,7 +19,8 @@
     background:var(--bg); color:var(--text); overflow:hidden;
   }
   #app{display:flex; height:100%; width:100%;}
-  #map{flex:1; height:100%; background:#0a0b0d;}
+  #map{flex:1; height:100%; background:#0a0b0d; position:relative;}
+  #cesiumContainer{position:absolute; inset:0;}
   #panel{
     width:360px; min-width:360px; height:100%; background:var(--panel);
     border-left:1px solid var(--border); display:flex; flex-direction:column;
@@ -101,7 +102,6 @@
   }
   footer.note code{background:var(--panel2); padding:1px 5px; border-radius:4px;}
 
-  .leaflet-container{background:#0a0b0d;}
   #map{position:relative;}
   .draw-hint{
     position:absolute; top:14px; left:14px; z-index:1000; background:rgba(16,18,22,.92);
@@ -109,16 +109,7 @@
     font-size:12.5px; display:none; box-shadow:0 4px 18px rgba(0,0,0,.4);
   }
   .draw-hint.show{display:block;}
-
-  #threeWrap{
-    position:absolute; inset:0; background:#0a0b0d; display:none; z-index:600;
-  }
-  #threeWrap.show{display:block;}
-  #threeWrap canvas{display:block;}
-  .three-topbar{
-    position:absolute; top:14px; left:14px; z-index:601;
-  }
-  .three-hint{
+  .map-hint{
     position:absolute; bottom:14px; left:14px; z-index:601; background:rgba(16,18,22,.85);
     border:1px solid var(--border); color:var(--muted); padding:7px 11px; border-radius:7px; font-size:11.5px;
   }
@@ -139,17 +130,15 @@
 <body>
 <div id="app">
   <div id="map">
-    <div class="draw-hint" id="drawHint">Touche/clique deux points sur la carte pour fixer les coins de la zone</div>
-    <div id="threeWrap">
-      <div class="three-topbar"><button id="closeThreeBtn">← Retour carte</button></div>
-      <div class="three-hint">Glisser : orbiter · molette / pincer : zoom · clic droit : déplacer</div>
-    </div>
+    <div id="cesiumContainer"></div>
+    <div class="draw-hint" id="drawHint">Touche/clique deux points sur le globe pour fixer les coins de la zone</div>
+    <div class="map-hint">Glisser : déplacer · molette / pincer : zoom · clic droit / deux doigts : orbiter</div>
   </div>
 
   <div id="panel">
     <header class="brand">
       <h1>Extracteur géométries OSM</h1>
-      <p>Sélectionne une zone → récupère bâtiments (OSM ou IGN), routes, murs, eau, végétation, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D.</p>
+      <p>Sélectionne une zone → récupère bâtiments (OSM ou IGN), routes, murs, eau, végétation, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D. Rendu et dessin de zone sur un globe CesiumJS (open-source, aucune clé API requise — imagerie Esri, pas de 3D Tiles Ion/Google).</p>
     </header>
 
     <div class="section">
@@ -190,7 +179,7 @@
 
     <div class="section">
       <h2>Aperçu 3D & export</h2>
-      <button id="view3dBtn" class="block" disabled>Vue 3D</button>
+      <button id="recenterBtn" class="block" disabled>Recentrer la vue sur la zone</button>
       <div class="btn-row">
         <button id="exportGlbBtn" class="ghost block" disabled>Télécharger .glb (mesh + texture)</button>
       </div>
@@ -206,7 +195,8 @@
       <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;">
         <b>.glb</b> : mesh + matériaux + photo aérienne (si cochée) dans un seul fichier autonome —
         aucune dépendance à Blender pour la récupération, c'est le format à préférer si ton logiciel
-        le lit (Blender/Unreal/Unity/Maya récents). L'.OBJ contient déjà le mesh 3D (bâtiments
+        le lit (Blender/Unreal/Unity/Maya récents). C'est aussi exactement ce qui s'affiche en direct
+        sur le globe ci-contre (même fichier, deux usages). L'.OBJ contient déjà le mesh 3D (bâtiments
         extrudés, routes, mobilier) — importable tel quel dans Blender/Maya/Houdini, mais sans
         matériaux/texture (format historique). Alembic (.abc) est un format binaire qu'aucune librairie
         JS ne sait écrire de façon fiable dans un navigateur : le script Blender fait l'extrusion
@@ -226,29 +216,33 @@
       approximation par champ de hauteur si la librairie échoue sur un contour dégénéré. Gable/
       skillion/pyramidal via leurs méthodes dédiées. <code>min_height</code>/<code>building:min_level</code>
       gérés (socles, tours à étages). <code>building:colour</code>/<code>roof:colour</code> appliqués
-      si hex valide. Cours intérieures (relations multipolygon) évidées dans l'aperçu 3D <b>et</b>
+      si hex valide. Cours intérieures (relations multipolygon) évidées dans le rendu 3D <b>et</b>
       dans l'export Blender (modifier Boolean par trou).
       Relief : case « Relief du terrain » (IGN RGE ALTI, France) — maillage adaptatif
       (<code>Martini</code>/RTIN, peu de triangles sur le plat, plus où le relief varie) au lieu
-      d'un plan plat, dans l'aperçu 3D, l'OBJ, le <code>.glb</code> et le script Blender.
+      d'un plan plat, dans le rendu 3D, l'OBJ, le <code>.glb</code> et le script Blender.
       Photo aérienne : case « Photo aérienne IGN » — texture le sol (pas les façades, une vue
       aérienne ne les voit jamais) ; embarquée directement dans le <code>.glb</code>, à
       réassigner à la main avec le <code>.jpg</code> pour l'OBJ/Blender.
       Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
+      Globe : CesiumJS (Apache 2.0), sans clé API ni compte — imagerie Esri World Street Map,
+      terrain ellipsoïde (pas de relief satellite tiers, notre propre relief IGN reste la seule
+      source d'élévation). Pas de 3D Tiles Cesium Ion / Google Photorealistic par choix explicite
+      (éviterait la dépendance à une clé API payante/à quota).
     </footer>
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://unpkg.com/cesium@1.145.0/Build/Cesium/Cesium.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
 <script src="https://unpkg.com/straight-skeleton@3.0.0/dist/index.js"></script>
 <script src="https://unpkg.com/@mapbox/martini@0.2.0/martini.js"></script>
 <script type="module">
   import { Document, WebIO } from 'https://cdn.jsdelivr.net/npm/@gltf-transform/core@4.5.1/+esm';
   window.__gltfTransform = { Document, WebIO };
+</script>
+<script>
+window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
 </script>
 <script>
 (function(){
@@ -270,7 +264,6 @@
   var terrainGrid = null; // set after a fetch with "Relief du terrain" checked
   var orthoBounds = null;    // {minLat,maxLat,minLon,maxLon} of the fetched aerial photo, if any
   var orthoBytes = null;     // raw JPEG bytes (Uint8Array) — used for the .glb embed and the .jpg download
-  var orthoThreeTexture = null; // pre-loaded THREE.Texture, ready to assign synchronously in buildThreeScene
   var IGN_ORTHO_WMS = 'https://data.geopf.fr/wms-r/wms';
 
   // real CGAL straight-skeleton (WASM) for general hip roofs — init once, in parallel with
@@ -281,13 +274,30 @@
     ? SkeletonBuilder.init().then(function(){ skeletonReady = true; }).catch(function(e){ console.warn('straight-skeleton init failed', e); })
     : Promise.resolve();
 
-  var map = L.map('map', { zoomControl:true }).setView([48.8566, 2.3522], 15); // Paris par défaut
-  // tile.openstreetmap.org bloque les requêtes sans Referer correct, et CARTO exige désormais
-  // une clé API -> Esri (pas de clé nécessaire, endpoint public stable) pour le fond de carte.
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom:19,
-    attribution:'&copy; Esri &mdash; Source: Esri, HERE, Garmin, OpenStreetMap contributors'
-  }).addTo(map);
+  // --- Cesium globe: replaces the old Leaflet 2D map + separate Three.js "Vue 3D" panel with a
+  // single view that draws the zone AND shows the fetched geometry in 3D. No Cesium Ion token —
+  // Ion-hosted assets (World Terrain, Bing imagery, 3D Tiles) are deliberately not used, only the
+  // open-source Cesium *engine* plus our own Esri/OSM/IGN sources (same ones the old Leaflet map
+  // used), so nothing here needs a paid/quota-limited API key.
+  var viewer = new Cesium.Viewer('cesiumContainer', {
+    baseLayerPicker:false, baseLayer:false, terrainProvider:new Cesium.EllipsoidTerrainProvider(),
+    geocoder:false, homeButton:false, sceneModePicker:false, navigationHelpButton:false,
+    animation:false, timeline:false, fullscreenButton:false, infoBox:false, selectionIndicator:false,
+    shadows:false
+  });
+  viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    credit: 'Esri — Source: Esri, HERE, Garmin, OpenStreetMap contributors'
+  }));
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0b0d');
+  viewer.scene.skyAtmosphere.show = false;
+  viewer.scene.sun.show = false;
+  viewer.scene.moon.show = false;
+  viewer.scene.skyBox.show = false;
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0b0d');
+  viewer.camera.setView({
+    destination: Cesium.Rectangle.fromDegrees(2.3222, 48.8156, 2.4222, 48.8956) // Paris par défaut
+  });
 
   var drawHint = document.getElementById('drawHint');
   var zoneInfoEl = document.getElementById('zoneInfo');
@@ -298,16 +308,44 @@
   var layerListEl = document.getElementById('layerList');
 
   var drawing = false;
-  var firstPoint = null;
-  var zoneRect = null;
-  var currentBounds = null;
-  var resultLayers = {}; // key -> {fc, leafletLayer}
+  var firstPoint = null; // {lat,lng} in degrees
+  var currentBounds = null; // Leaflet-LatLngBounds-compatible: {getSouthWest, getNorthEast, getCenter}
+  var resultLayers = {}; // key -> {fc}
   var fetchBounds = null; // bounds actually used for the last successful fetch (3D/export reference)
-  var view3dBtn = document.getElementById('view3dBtn');
+  var recenterBtn = document.getElementById('recenterBtn');
   var exportObjBtn = document.getElementById('exportObjBtn');
   var exportAbcBtn = document.getElementById('exportAbcBtn');
   var exportOrthoBtn = document.getElementById('exportOrthoBtn');
   var exportGlbBtn = document.getElementById('exportGlbBtn');
+
+  // drop-in replacement for L.latLngBounds(...) — every fetch/WFS/WMS/elevation function below
+  // reads bounds exclusively through these three methods, so nothing downstream of zone selection
+  // needs to know or care that Leaflet is gone.
+  function makeBounds(latA, lngA, latB, lngB){
+    var south = Math.min(latA, latB), north = Math.max(latA, latB);
+    var west = Math.min(lngA, lngB), east = Math.max(lngA, lngB);
+    return {
+      getSouthWest: function(){ return { lat: south, lng: west }; },
+      getNorthEast: function(){ return { lat: north, lng: east }; },
+      getCenter: function(){ return { lat: (south+north)/2, lng: (west+east)/2 }; }
+    };
+  }
+
+  var zoneEntity = null;
+  function setZoneEntity(bounds){
+    if (zoneEntity) viewer.entities.remove(zoneEntity);
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    zoneEntity = viewer.entities.add({
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(sw.lng, sw.lat, ne.lng, ne.lat),
+        material: Cesium.Color.fromCssColorString('#ff8a3d').withAlpha(0.12),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString('#ff8a3d'),
+        outlineWidth: 2,
+        height: 0
+      }
+    });
+  }
 
   // --- build layer checkbox list ---
   Object.keys(LAYERS).forEach(function(key){
@@ -381,31 +419,38 @@
     }
   }
 
-  // --- draw a zone: tap/click two corners ---
+  // --- draw a zone: tap/click two corners on the globe ---
   drawBtn.addEventListener('click', function(){
     drawing = true;
     firstPoint = null;
-    if (zoneRect){ map.removeLayer(zoneRect); zoneRect = null; }
     drawHint.classList.add('show');
-    map.getContainer().style.cursor = 'crosshair';
+    viewer.canvas.style.cursor = 'crosshair';
   });
 
-  map.on('click', function(e){
+  function pickCartographicDegrees(screenPosition){
+    var cartesian = viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
+    if (!cartesian) return null;
+    var carto = Cesium.Cartographic.fromCartesian(cartesian);
+    return { lat: Cesium.Math.toDegrees(carto.latitude), lng: Cesium.Math.toDegrees(carto.longitude) };
+  }
+
+  var clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+  clickHandler.setInputAction(function(click){
     if (!drawing) return;
+    var p = pickCartographicDegrees(click.position);
+    if (!p) return;
     if (!firstPoint){
-      firstPoint = e.latlng;
+      firstPoint = p;
       return;
     }
-    var bounds = L.latLngBounds(firstPoint, e.latlng);
-    if (zoneRect) map.removeLayer(zoneRect);
-    zoneRect = L.rectangle(bounds, { color:'#ff8a3d', weight:2, fillOpacity:.08 }).addTo(map);
-    currentBounds = bounds;
+    currentBounds = makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng);
+    setZoneEntity(currentBounds);
     drawing = false;
     firstPoint = null;
     drawHint.classList.remove('show');
-    map.getContainer().style.cursor = '';
+    viewer.canvas.style.cursor = '';
     updateZoneInfo();
-  });
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   // --- search / geocode (Nominatim) ---
   document.getElementById('searchBtn').addEventListener('click', doSearch);
@@ -421,7 +466,8 @@
       .then(function(results){
         if (!results.length){ setStatus('Lieu introuvable.', true); return; }
         var r = results[0];
-        map.setView([parseFloat(r.lat), parseFloat(r.lon)], 16);
+        var lat = parseFloat(r.lat), lon = parseFloat(r.lon);
+        viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 900) });
         setStatus('', false);
       })
       .catch(function(err){ setStatus('Erreur de recherche : ' + err.message, true); });
@@ -526,56 +572,32 @@
     });
   }
 
-  // UV mapping shared by the 3D preview and the .glb export — glTF's own convention (V=0 at the
-  // TOP/north edge of the image, increasing southward) is used as the single source of truth;
-  // the THREE.Texture built from the same bytes gets flipY=false so the preview matches it
-  // exactly, instead of computing two different UV sets for the two consumers.
-  function applyGeoUV(geometry, bounds, center){
-    var pos = geometry.attributes.position;
+  // UV mapping shared by the ground mesh descriptor — glTF's own convention (V=0 at the TOP/north
+  // edge of the image, increasing southward) is used directly since positions are already final
+  // world-local (X,Y,Z) at this point, no engine-specific texture flipY concern anymore.
+  function applyGeoUV(positions, bounds, center){
     var mPerDegLat = 111320;
     var mPerDegLon = 111320 * Math.cos(center.lat * Math.PI/180);
-    var uvs = new Float32Array(pos.count*2);
-    for (var i=0;i<pos.count;i++){
-      var lon = center.lng + pos.getX(i)/mPerDegLon;
-      var lat = center.lat - pos.getZ(i)/mPerDegLat;
+    var n = positions.length/3;
+    var uvs = new Float32Array(n*2);
+    for (var i=0;i<n;i++){
+      var x = positions[i*3], z = positions[i*3+2];
+      var lon = center.lng + x/mPerDegLon;
+      var lat = center.lat - z/mPerDegLat;
       uvs[i*2]   = (lon - bounds.minLon) / (bounds.maxLon - bounds.minLon);
       uvs[i*2+1] = (bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat);
     }
-    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    return uvs;
   }
 
-  // flat ground quad built directly with vertices already in local (x, y, z) space — deliberately
-  // NOT a THREE.PlaneGeometry rotated into place: a rotated mesh's geometry.attributes.position
-  // stays in its own pre-rotation local frame (x, y, 0), which would silently break applyGeoUV
-  // above (it reads world-style x/z straight off the position attribute).
+  // flat ground quad, vertices directly in local (x, y, z) space.
   function buildFlatGroundGeometry(extentX, extentZ){
     var hx = extentX/2, hz = extentZ/2, y = -0.05;
-    var positions = [
+    var positions = new Float32Array([
       -hx,y,-hz,  hx,y,-hz,  hx,y,hz,
       -hx,y,-hz,  hx,y,hz,  -hx,y,hz
-    ];
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
-  }
-
-  // decodes fetched JPEG bytes into a ready-to-use THREE.Texture. flipY=false + sRGB encoding so
-  // the preview matches the same UV convention (and colors) as the .glb export, which embeds the
-  // same bytes raw and follows glTF's top-down V convention rather than three.js's default.
-  function loadThreeTextureFromBytes(bytes){
-    return new Promise(function(resolve, reject){
-      var blob = new Blob([bytes], { type:'image/jpeg' });
-      var url = URL.createObjectURL(blob);
-      var loader = new THREE.TextureLoader();
-      loader.load(url, function(tex){
-        tex.flipY = false;
-        if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
-        tex.needsUpdate = true;
-        URL.revokeObjectURL(url);
-        resolve(tex);
-      }, undefined, function(err){ URL.revokeObjectURL(url); reject(err); });
-    });
+    ]);
+    return { positions: positions, indices: null };
   }
 
   // builds a (x,z)->y sampler in local meters from a fetched elevation grid, for the given
@@ -647,10 +669,7 @@
         positions.push(b.x,b.y,b.z, d.x,d.y,d.z, c.x,c.y,c.z);
       }
     }
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   // adaptive terrain mesh (RTIN via Martini) — fewer triangles on flat ground, more where the
@@ -684,11 +703,7 @@
       var a=worldPts[mesh.triangles[t]], b=worldPts[mesh.triangles[t+1]], c=worldPts[mesh.triangles[t+2]];
       positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
     }
-
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   // representative lon/lat point of a raw (unprojected) GeoJSON geometry, used to look up its
@@ -707,284 +722,13 @@
     return null;
   }
 
-  // --- overpass query + fetch ---
-  fetchBtn.addEventListener('click', function(){
-    if (!currentBounds) return;
-    var keys = selectedLayerKeys();
-    if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
-
-    var useIGN = keys.indexOf('buildings') !== -1 && document.getElementById('buildingSource').value === 'ign';
-    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && useIGN); });
-
-    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
-    var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
-
-    var parts = [];
-    if (overpassKeys.indexOf('buildings') !== -1){
-      parts.push('way["building"](' + bbox + ');');
-      parts.push('way["building:part"](' + bbox + ');');
-      parts.push('relation["building"]["type"="multipolygon"](' + bbox + ');');
-    }
-    if (overpassKeys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
-    if (overpassKeys.indexOf('walls') !== -1) parts.push('way["barrier"](' + bbox + ');');
-    if (overpassKeys.indexOf('water') !== -1){
-      parts.push('way["natural"="water"](' + bbox + ');');
-      parts.push('way["waterway"](' + bbox + ');');
-    }
-    if (overpassKeys.indexOf('vegetation') !== -1){
-      parts.push('way["landuse"~"^(grass|forest|meadow)$"](' + bbox + ');');
-      parts.push('way["natural"="wood"](' + bbox + ');');
-    }
-    if (overpassKeys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
-    if (overpassKeys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
-    if (overpassKeys.indexOf('furniture') !== -1){
-      parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
-      parts.push('node["highway"~"^(traffic_signals|bus_stop)$"](' + bbox + ');');
-    }
-
-    var query = parts.length ? ('[out:json][timeout:60];(' + parts.join('') + ');out geom;') : null;
-
-    fetchBtn.disabled = true;
-    setStatus('<span class="spinner"></span>Interrogation…', false, true);
-
-    // clear previous preview layers
-    Object.keys(resultLayers).forEach(function(k){
-      if (resultLayers[k].leafletLayer) map.removeLayer(resultLayers[k].leafletLayer);
-    });
-    resultLayers = {};
-    fetchBounds = null;
-    terrainGrid = null;
-    orthoBounds = null;
-    orthoBytes = null;
-    orthoThreeTexture = null;
-    view3dBtn.disabled = true;
-    exportObjBtn.disabled = true;
-    exportAbcBtn.disabled = true;
-    exportOrthoBtn.disabled = true;
-    exportGlbBtn.disabled = true;
-    Object.keys(LAYERS).forEach(function(k){
-      document.getElementById('count_'+k).textContent = '–';
-      document.getElementById('dl_'+k).style.display = 'none';
-    });
-
-    var OVERPASS_MIRRORS = [
-      'https://overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter',
-      'https://overpass.openstreetmap.ru/api/interpreter'
-    ];
-
-    function fetchFromMirrors(mirrors, body, lastErr){
-      if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
-      var url = mirrors[0];
-      setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
-      return fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: 'data=' + encodeURIComponent(body)
-      })
-      .then(function(r){
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
-        return r.json();
-      })
-      .catch(function(err){
-        return fetchFromMirrors(mirrors.slice(1), body, err);
-      });
-    }
-
-    var wantRelief = document.getElementById('chkRelief').checked;
-    var wantOrtho = document.getElementById('chkOrtho').checked;
-
-    var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
-    var ignPromise = useIGN
-      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN bâtiments : ' + err.message); })
-      : Promise.resolve(null);
-    var reliefPromise = wantRelief
-      ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
-      : Promise.resolve(null);
-    var orthoPromise = wantOrtho
-      ? fetchIGNOrthophoto(currentBounds).catch(function(err){ throw new Error('IGN photo aérienne : ' + err.message); })
-      : Promise.resolve(null);
-
-    Promise.all([overpassPromise, ignPromise, reliefPromise, orthoPromise])
-    .then(function(results){
-      var elements = results[0].elements || [];
-      var ignFc = results[1];
-      terrainGrid = results[2];
-      var orthoResult = results[3];
-      orthoBounds = orthoResult ? { minLat:orthoResult.minLat, maxLat:orthoResult.maxLat, minLon:orthoResult.minLon, maxLon:orthoResult.maxLon } : null;
-      orthoBytes = orthoResult ? orthoResult.bytes : null;
-      orthoThreeTexture = null;
-      var orthoTexturePromise = orthoResult ? loadThreeTextureFromBytes(orthoResult.bytes).then(function(tex){ orthoThreeTexture = tex; }) : Promise.resolve();
-      keys.forEach(function(key){
-        var def = LAYERS[key];
-        var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
-                                                  : elementsToGeoJSON(elements, def.filter);
-        resultLayers[key] = { fc: fc };
-        document.getElementById('count_'+key).textContent = fc.features.length;
-        if (fc.features.length){
-          document.getElementById('dl_'+key).style.display = 'inline-block';
-          var lyr = L.geoJSON(fc, {
-            style: function(){ return { color: def.color, weight:2, fillOpacity:.25 }; },
-            pointToLayer: function(feature, latlng){
-              return L.circleMarker(latlng, { radius:4, color:def.color, fillColor:def.color, fillOpacity:.9, weight:1 });
-            }
-          }).addTo(map);
-          resultLayers[key].leafletLayer = lyr;
-        }
-      });
-      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
-
-      return orthoTexturePromise.then(function(){
-        var reliefTxt = '';
-        if (terrainGrid){
-          var flatEls = [].concat.apply([], terrainGrid.elevations);
-          var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
-          reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
-        }
-        var orthoTxt = orthoResult ? ' + photo aérienne IGN' : '';
-        setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
-        statusEl.classList.add('ok');
-        fetchBtn.disabled = false;
-        if (total > 0){
-          fetchBounds = currentBounds;
-          view3dBtn.disabled = false;
-          exportObjBtn.disabled = false;
-          exportAbcBtn.disabled = false;
-          if (window.__gltfTransform) exportGlbBtn.disabled = false;
-        }
-        if (orthoResult) exportOrthoBtn.disabled = false;
-      });
-    })
-    .catch(function(err){
-      setStatus('Échec : ' + err.message + ' (réessaie, ou réduis la zone)', true);
-      fetchBtn.disabled = false;
-    });
-  });
-
-  // area-like ways: closed rings that should become Polygon, not LineString
-  function isAreaTag(tags){
-    return !!tags.building || !!tags['building:part'] ||
-      tags.natural === 'water' || tags.natural === 'wood' ||
-      ['grass','forest','meadow'].indexOf(tags.landuse) !== -1;
-  }
-
-  // building height + roof estimate from OSM tags (height/building:levels, roof:shape/roof:height/roof:levels)
-  function buildingHeightAndRoof(tags){
-    var h = null;
-    if (tags.height) h = parseFloat(tags.height);
-    else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
-    var totalHeight = (h && !isNaN(h)) ? h : 9;
-
-    var roofShape = tags['roof:shape'] || 'flat';
-    var roofHeight = 0;
-    if (roofShape !== 'flat'){
-      if (tags['roof:height']) roofHeight = parseFloat(tags['roof:height']);
-      else if (tags['roof:levels']) roofHeight = parseFloat(tags['roof:levels']) * 3;
-      else roofHeight = Math.min(2.5, totalHeight * 0.25);
-      if (isNaN(roofHeight) || roofHeight <= 0) roofHeight = 0;
-      if (roofHeight >= totalHeight) roofHeight = totalHeight * 0.4;
-    }
-
-    // min_height / building:min_level: elevates a building:part above ground (podium, tiered
-    // tower, wing starting above a passage...) — mirrors how blender-osm stacks building:part.
-    var minHeight = 0;
-    if (tags.min_height) minHeight = parseFloat(tags.min_height);
-    else if (tags['building:min_level']) minHeight = parseFloat(tags['building:min_level']) * 3;
-    if (isNaN(minHeight) || minHeight < 0) minHeight = 0;
-    if (minHeight >= totalHeight) minHeight = 0; // guard against bad/contradictory tagging
-
-    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight - minHeight, minHeight: minHeight };
-  }
-
-  function buildProps(el, tags){
-    var props = { osm_id: el.id, osm_type: el.type };
-    Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
-    if (tags.building || tags['building:part']){
-      var bh = buildingHeightAndRoof(tags);
-      props.height_est_m = bh.totalHeight;
-      props.roof_shape = bh.roofShape;
-      props.roof_height_m = bh.roofHeight;
-      props.wall_height_m = bh.wallHeight;
-      props.min_height_m = bh.minHeight;
-    }
-    if (tags.barrier){
-      props.wall_height_m = (tags.barrier === 'wall') ? 1.8 : (tags.barrier === 'hedge' ? 1.2 : 1.1);
-    }
-    return props;
-  }
-
-  function elementsToGeoJSON(elements, filterFn){
-    var features = [];
-    for (var i=0; i<elements.length; i++){
-      var el = elements[i];
-
-      // relations (multipolygon buildings): outer ring(s) + inner ring(s) as holes.
-      // simplified: all inner rings are attached as holes of the first outer ring —
-      // covers the common single-outer courtyard case, not multi-outer multi-hole relations.
-      if (el.type === 'relation'){
-        var rtags = el.tags || {};
-        if (!filterFn(rtags) || !el.members) continue;
-        var outerRings = [], innerRings = [];
-        el.members.forEach(function(m){
-          if (!m.geometry) return;
-          var ring = m.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
-          if (ring.length < 3) return;
-          (m.role === 'inner' ? innerRings : outerRings).push(ring);
-        });
-        outerRings.forEach(function(ring, idx){
-          var coordinates = [ring].concat(idx === 0 ? innerRings : []);
-          features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates: coordinates }, properties: buildProps(el, rtags) });
-        });
-        continue;
-      }
-
-      var tags = el.tags || {};
-      if (!filterFn(tags)) continue;
-
-      var geometry;
-      if (el.type === 'node'){
-        geometry = { type:'Point', coordinates:[el.lon, el.lat] };
-      } else if (el.type === 'way' && el.geometry){
-        var coords = el.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
-        if (coords.length < 2) continue;
-        var closed = coords.length > 2 &&
-          coords[0][0] === coords[coords.length-1][0] &&
-          coords[0][1] === coords[coords.length-1][1];
-        if (closed && isAreaTag(tags)){
-          geometry = { type:'Polygon', coordinates:[coords] };
-        } else {
-          geometry = { type:'LineString', coordinates: coords };
-        }
-      } else {
-        continue;
-      }
-
-      features.push({ type:'Feature', geometry: geometry, properties: buildProps(el, tags) });
-    }
-    return { type:'FeatureCollection', features: features };
-  }
-
-  function downloadLayer(key){
-    var entry = resultLayers[key];
-    if (!entry || !entry.fc.features.length) return;
-    var blob = new Blob([JSON.stringify(entry.fc)], { type:'application/geo+json' });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = key + '.geojson';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
-  }
-
   function setStatus(html, isError){
     statusEl.classList.remove('error','ok');
     statusEl.innerHTML = html;
     if (isError) statusEl.classList.add('error');
   }
 
-  // --- 3D: local ENU-ish projection (meters), centered on the fetched zone ---
+  // --- local ENU-ish projection (meters), centered on the fetched zone ---
   function project(lat, lon, center){
     var DEG2RAD = Math.PI/180;
     var metersPerDegLat = 111320;
@@ -996,37 +740,202 @@
   }
 
   function polygonRingToPoints(ring, center){
-    var pts = ring.map(function(c){ var p = project(c[1], c[0], center); return new THREE.Vector2(p.x, p.z); });
-    if (pts.length > 1 && pts[0].equals(pts[pts.length-1])) pts.pop();
+    var pts = ring.map(function(c){ var p = project(c[1], c[0], center); return { x:p.x, y:p.z }; });
+    if (pts.length > 1 && pts[0].x === pts[pts.length-1].x && pts[0].y === pts[pts.length-1].y) pts.pop();
     return pts.length >= 3 ? pts : null;
   }
 
-  // THREE.Shape/ExtrudeGeometry/ShapeGeometry (walls, flat areas) live in an XY plane that gets
-  // folded into world XZ via rotateX(-Math.PI/2) elsewhere — that specific rotation maps
-  // shape-Y -> world (-Z), not world Z. `shape` below is built with Y negated to compensate, so
-  // it lands at the correct world Z after that rotation. `outerPts`/`holePtsList` are kept in
-  // true (worldX, worldZ) — unrotated — because the roof functions (buildHipRoofSkeleton,
-  // buildPyramidalRoofGeometry, buildOABBRoofGeometry, buildHipRoofHeightfield) consume them
-  // directly as (x,z) with no rotation at all. Before this fix both were built from the same
-  // (worldX, worldZ) points and only outerPts's consumers were correct — every wall and every
-  // flat area (water/vegetation) rendered mirrored on Z relative to its own roof, the roads,
-  // the terrain and the orthophoto (empirically verified via ExtrudeGeometry bbox + face-normal
-  // inspection: negating only the shape's Y here is the one combination that fixes position
-  // *and* keeps the extrude's outward-facing winding correct — rotating the other way or
-  // negating depth instead each fix position but flip the wall faces inside-out).
-  function ringsToShape(coordinates, center){
+  function ringsToPointLists(coordinates, center){
     var outerPts = polygonRingToPoints(coordinates[0], center);
     if (!outerPts) return null;
-    var shape = new THREE.Shape(outerPts.map(function(p){ return new THREE.Vector2(p.x, -p.y); }));
     var holePtsList = [];
     coordinates.slice(1).forEach(function(ring){
       var holePts = polygonRingToPoints(ring, center);
-      if (holePts){
-        shape.holes.push(new THREE.Path(holePts.map(function(p){ return new THREE.Vector2(p.x, -p.y); })));
-        holePtsList.push(holePts);
-      }
+      if (holePts) holePtsList.push(holePts);
     });
-    return { shape: shape, outerPts: outerPts, holePtsList: holePtsList };
+    return { outerPts: outerPts, holePtsList: holePtsList };
+  }
+
+  // ===== mesh-descriptor geometry primitives (plain {positions:Float32Array, indices:Uint32Array|null})
+  // no rendering engine dependency at all — one pipeline feeds both the live Cesium.Model preview
+  // and the .glb/.OBJ export (buildGlbBinary / buildObjText below). Ring winding is normalized
+  // internally so real-world OSM/IGN data (inconsistent CW/CCW) never needs pre-sorting by callers.
+
+  function ringSignedArea(ring){
+    var a = 0;
+    for (var i=0;i<ring.length;i++){
+      var p = ring[i], q = ring[(i+1)%ring.length];
+      a += p.x*q.y - q.x*p.y;
+    }
+    return a/2;
+  }
+  function ensureOrientation(ring, wantCCW){
+    var isCCW = ringSignedArea(ring) > 0;
+    return (isCCW === wantCCW) ? ring : ring.slice().reverse();
+  }
+
+  // solid extruded polygon (building walls) with optional holes (courtyards) — replaces
+  // THREE.ExtrudeGeometry(shape,{depth})+rotateX(-Math.PI/2), which used to fold the shape's XY
+  // plane into world XZ and, in the process, mirrored every wall on the Z axis relative to its own
+  // roof (fixed separately, then made moot entirely here: there is no rotation step anymore, walls
+  // are authored directly in final world-local (x,y,z), so this whole bug class can't recur).
+  // Verified via Node self-tests: correct bbox, winding-independent (CW or CCW input ring gives the
+  // identical result), correct outward-facing normals on outer walls + both caps + hole walls.
+  function buildExtrudedPolygon(outerPtsIn, holePtsListIn, baseY, topY){
+    var outerPts = ensureOrientation(outerPtsIn, true);
+    var holePtsList = (holePtsListIn||[]).map(function(h){ return ensureOrientation(h, false); });
+
+    var flat = [];
+    var holeIndices = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    holePtsList.forEach(function(hole){
+      holeIndices.push(flat.length/2);
+      hole.forEach(function(p){ flat.push(p.x, p.y); });
+    });
+    var capTris = earcut(flat, holeIndices.length ? holeIndices : null);
+    if (!capTris.length) return null;
+
+    var positions = [];
+    var indices = [];
+    function addVert(x,y,z){ positions.push(x,y,z); return positions.length/3 - 1; }
+
+    var nPts = flat.length/2;
+    var topBase = positions.length/3;
+    for (var i=0;i<nPts;i++) addVert(flat[i*2], topY, flat[i*2+1]);
+    for (var t=0;t<capTris.length;t+=3){
+      indices.push(topBase+capTris[t], topBase+capTris[t+2], topBase+capTris[t+1]);
+    }
+    var botBase = positions.length/3;
+    for (var i2=0;i2<nPts;i2++) addVert(flat[i2*2], baseY, flat[i2*2+1]);
+    for (var t2=0;t2<capTris.length;t2+=3){
+      indices.push(botBase+capTris[t2], botBase+capTris[t2+1], botBase+capTris[t2+2]);
+    }
+
+    function addWallRing(ring){
+      var n = ring.length;
+      for (var i=0;i<n;i++){
+        var a = ring[i], b = ring[(i+1)%n];
+        var a0 = addVert(a.x, baseY, a.y);
+        var b0 = addVert(b.x, baseY, b.y);
+        var b1 = addVert(b.x, topY, b.y);
+        var a1 = addVert(a.x, topY, a.y);
+        indices.push(a0,b1,b0, a0,a1,b1);
+      }
+    }
+    addWallRing(outerPts);
+    holePtsList.forEach(addWallRing);
+
+    return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
+  }
+
+  // flat capped area (water/vegetation), optional holes — same cap logic as buildExtrudedPolygon
+  // without the walls/bottom, single Y level.
+  function buildFlatCapPolygon(outerPtsIn, holePtsListIn, y){
+    var outerPts = ensureOrientation(outerPtsIn, true);
+    var holePtsList = (holePtsListIn||[]).map(function(h){ return ensureOrientation(h, false); });
+    var flat = [];
+    var holeIndices = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    holePtsList.forEach(function(hole){
+      holeIndices.push(flat.length/2);
+      hole.forEach(function(p){ flat.push(p.x, p.y); });
+    });
+    var tris = earcut(flat, holeIndices.length ? holeIndices : null);
+    if (!tris.length) return null;
+    var nPts = flat.length/2;
+    var positions = new Float32Array(nPts*3);
+    for (var i=0;i<nPts;i++){ positions[i*3]=flat[i*2]; positions[i*3+1]=y; positions[i*3+2]=flat[i*2+1]; }
+    var indices = new Uint32Array(tris.length);
+    for (var t=0;t<tris.length;t+=3){ indices[t]=tris[t]; indices[t+1]=tris[t+2]; indices[t+2]=tris[t+1]; }
+    return { positions: positions, indices: indices };
+  }
+
+  // oriented box, centered at (cx,cy,cz), size (w,h,d) before a rotation of rotY radians around Y
+  // through the center — used for road/wall/furniture box segments. Verified via Node self-test:
+  // correct bbox under rotation, correct outward top/bottom normals.
+  function buildBoxAt(cx, cy, cz, w, h, d, rotY){
+    var hw=w/2, hh=h/2, hd=d/2;
+    var cos = Math.cos(rotY||0), sin = Math.sin(rotY||0);
+    function tp(lx, lz){ return { x: cx + lx*cos - lz*sin, z: cz + lx*sin + lz*cos }; }
+    var a=tp(-hw,-hd), b=tp(hw,-hd), c=tp(hw,hd), d2=tp(-hw,hd);
+    var y0=cy-hh, y1=cy+hh;
+    var positions=[], indices=[];
+    function v(p,y){ positions.push(p.x,y,p.z); return positions.length/3-1; }
+    function quad(p0,y0_,p1,y1_,p2,y2_,p3,y3_){
+      var i0=v(p0,y0_), i1=v(p1,y1_), i2=v(p2,y2_), i3=v(p3,y3_);
+      indices.push(i0,i1,i2, i0,i2,i3);
+    }
+    quad(d2,y1, c,y1, b,y1, a,y1); // top
+    quad(a,y0, b,y0, c,y0, d2,y0); // bottom
+    quad(a,y0, b,y0, b,y1, a,y1); // side a-b
+    quad(b,y0, c,y0, c,y1, b,y1); // side b-c
+    quad(c,y0, d2,y0, d2,y1, c,y1); // side c-d
+    quad(d2,y0, a,y0, a,y1, d2,y1); // side d-a
+    return { positions:new Float32Array(positions), indices:new Uint32Array(indices) };
+  }
+
+  // cylinder (radiusTop=radiusBot -> straight cylinder; radiusTop=0 -> cone), base at (cx,cy,cz),
+  // extends +height along Y. Verified via Node self-test: correct bbox, outward side-wall normals,
+  // correct top/bottom cap normals.
+  function buildCylinderAt(cx, cy, cz, radiusTop, radiusBot, height, segments){
+    segments = segments || 10;
+    var positions=[], indices=[];
+    function v(x,y,z){ positions.push(x,y,z); return positions.length/3-1; }
+    var y0=cy, y1=cy+height;
+    var topRing=[], botRing=[];
+    for (var i=0;i<segments;i++){
+      var a = i/segments*Math.PI*2;
+      var ca=Math.cos(a), sa=Math.sin(a);
+      topRing.push(v(cx+ca*radiusTop, y1, cz+sa*radiusTop));
+      botRing.push(v(cx+ca*radiusBot, y0, cz+sa*radiusBot));
+    }
+    for (var i2=0;i2<segments;i2++){
+      var j=(i2+1)%segments;
+      indices.push(botRing[i2],topRing[j],botRing[j], botRing[i2],topRing[i2],topRing[j]);
+    }
+    if (radiusTop>0){
+      var ct = v(cx,y1,cz);
+      for (var i3=0;i3<segments;i3++){ var j3=(i3+1)%segments; indices.push(ct, topRing[j3], topRing[i3]); }
+    }
+    if (radiusBot>0){
+      var cb = v(cx,y0,cz);
+      for (var i4=0;i4<segments;i4++){ var j4=(i4+1)%segments; indices.push(cb, botRing[i4], botRing[j4]); }
+    }
+    return {positions:new Float32Array(positions), indices:new Uint32Array(indices)};
+  }
+
+  // simple UV sphere centered at (cx,cy,cz) — lamp bulbs only, decorative/low-detail.
+  function buildSphereAt(cx, cy, cz, radius, segs){
+    segs = segs || 8;
+    var positions=[], indices=[];
+    var rings = segs, sectors = segs;
+    for (var r=0; r<=rings; r++){
+      var phi = Math.PI * r/rings; // 0..PI (top to bottom)
+      var y = cy + radius*Math.cos(phi);
+      var rr = radius*Math.sin(phi);
+      for (var s=0; s<=sectors; s++){
+        var theta = 2*Math.PI * s/sectors;
+        positions.push(cx+rr*Math.cos(theta), y, cz+rr*Math.sin(theta));
+      }
+    }
+    for (var r2=0; r2<rings; r2++){
+      for (var s2=0; s2<sectors; s2++){
+        var a=r2*(sectors+1)+s2, b=a+sectors+1;
+        indices.push(a,b,a+1, b,b+1,a+1);
+      }
+    }
+    return {positions:new Float32Array(positions), indices:new Uint32Array(indices)};
+  }
+
+  function offsetY(mesh, dy){
+    if (!mesh || !dy) return mesh;
+    var p = mesh.positions;
+    for (var i=1;i<p.length;i+=3) p[i]+=dy;
+    return mesh;
+  }
+  function tintMesh(mesh, color, name){
+    if (mesh) { mesh.color = color; mesh.name = name; }
+    return mesh;
   }
 
   // --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented
@@ -1127,10 +1036,7 @@
       tri(w01, w00, r0);
     }
 
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   // pyramidal: forced single apex regardless of footprint shape (per OSM roof:shape semantics) —
@@ -1144,10 +1050,7 @@
       var p1 = outerPts[i], p2 = outerPts[(i+1)%outerPts.length];
       positions.push(p1.x, wallH, p1.y,  p2.x, wallH, p2.y,  cx, wallH+roofH, cz);
     }
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   // hipped (and any other/exotic roof:shape as a generic pitched fallback): general hip roof for
@@ -1247,10 +1150,7 @@
     });
     if (!positions.length) return null;
 
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   function buildHipRoofHeightfield(outerPts, wallH, roofH){
@@ -1304,10 +1204,7 @@
       }
     });
 
-    var geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geometry.computeVertexNormals();
-    return geometry;
+    return { positions: new Float32Array(positions), indices: null };
   }
 
   // OSM colour tags are almost always #rrggbb / #rgb — only trust that shape, anything else
@@ -1317,62 +1214,26 @@
     var v = val.trim();
     if (/^#?[0-9a-fA-F]{6}$/.test(v) || /^#?[0-9a-fA-F]{3}$/.test(v)){
       if (v[0] !== '#') v = '#' + v;
-      try { return new THREE.Color(v); } catch(e){ return fallback; }
+      try {
+        var hex = v.slice(1);
+        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+        var num = parseInt(hex, 16);
+        return { r:((num>>16)&255)/255, g:((num>>8)&255)/255, b:(num&255)/255 };
+      } catch(e){ return fallback; }
     }
     return fallback;
   }
-
-  function buildBuildingMesh(geom, props, mat, center){
-    var built = ringsToShape(geom.coordinates, center);
-    if (!built) return null;
-
-    var totalH = props.height_est_m || 9;
-    var roofH = props.roof_height_m || 0;
-    var minH = props.min_height_m || 0;
-    var wallH = props.wall_height_m;
-    if (!wallH || wallH < 0.3) wallH = totalH - roofH - minH;
-    if (wallH < 0.3) wallH = totalH;
-
-    var wallColor = parseOsmHexColor(props['building:colour'], mat.color);
-    var wallMat = (wallColor === mat.color) ? mat : new THREE.MeshStandardMaterial({ color: wallColor, roughness:0.85, metalness:0.05 });
-
-    var group = new THREE.Group();
-    var wallGeom = new THREE.ExtrudeGeometry(built.shape, { depth: wallH, bevelEnabled:false });
-    wallGeom.rotateX(-Math.PI/2);
-    group.add(new THREE.Mesh(wallGeom, wallMat));
-
-    if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
-      var shape2 = props.roof_shape;
-      var roofGeom;
-      if (shape2 === 'gabled' || shape2 === 'skillion'){
-        roofGeom = buildOABBRoofGeometry(built.outerPts, wallH, roofH, shape2);
-      } else if (shape2 === 'pyramidal'){
-        roofGeom = buildPyramidalRoofGeometry(built.outerPts, wallH, roofH);
-      } else {
-        // hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic pitched fallback.
-        // Real straight-skeleton first (correct on any footprint incl. concave), heightfield
-        // approximation only if the WASM lib isn't ready or fails on this particular polygon.
-        roofGeom = buildHipRoofSkeleton(built, wallH, roofH) || buildHipRoofHeightfield(built.outerPts, wallH, roofH);
-      }
-      var roofColor = parseOsmHexColor(props['roof:colour'], wallColor.clone().multiplyScalar(0.75));
-      var roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness:0.9, side:THREE.DoubleSide });
-      group.add(new THREE.Mesh(roofGeom, roofMat));
-    }
-
-    // min_height / building:min_level: elevate the whole part (walls+roof) above the ground —
-    // podiums, tiered towers, wings starting above a passage.
-    if (minH > 0.01) group.position.y = minH;
-    return group;
+  function hexToColor(hex){
+    var num = parseInt(hex.replace('#',''), 16);
+    return { r:((num>>16)&255)/255, g:((num>>8)&255)/255, b:(num&255)/255 };
   }
+  function scaleColor(c, f){ return { r:c.r*f, g:c.g*f, b:c.b*f }; }
 
-  function buildFlatAreaMesh(geom, mat, center, yLevel){
-    var built = ringsToShape(geom.coordinates, center);
-    if (!built) return null;
-    var geometry = new THREE.ShapeGeometry(built.shape);
-    geometry.rotateX(-Math.PI/2);
-    var mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: mat.color, roughness:1, side:THREE.DoubleSide }));
-    mesh.position.y = yLevel;
-    return mesh;
+  function buildFlatAreaMesh(geom, color, center, yLevel){
+    var rings = ringsToPointLists(geom.coordinates, center);
+    if (!rings) return null;
+    var mesh = buildFlatCapPolygon(rings.outerPts, rings.holePtsList, yLevel);
+    return tintMesh(mesh, color, 'area');
   }
 
   function estimateRoadWidth(props){
@@ -1393,203 +1254,426 @@
     return 5;
   }
 
-  function buildFeatureMesh(key, feature, color, center, terrainFn){
-    var mesh = buildFeatureMeshImpl(key, feature, color, center);
-    if (mesh && terrainFn){
-      var rp = representativeLonLat(feature.geometry);
-      if (rp){
-        var p = project(rp.lat, rp.lon, center);
-        mesh.position.y = (mesh.position.y || 0) + terrainFn(p.x, p.z);
-      }
+  // building height + roof estimate from OSM tags (height/building:levels, roof:shape/roof:height/roof:levels)
+  function buildingHeightAndRoof(tags){
+    var h = null;
+    if (tags.height) h = parseFloat(tags.height);
+    else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
+    var totalHeight = (h && !isNaN(h)) ? h : 9;
+
+    var roofShape = tags['roof:shape'] || 'flat';
+    var roofHeight = 0;
+    if (roofShape !== 'flat'){
+      if (tags['roof:height']) roofHeight = parseFloat(tags['roof:height']);
+      else if (tags['roof:levels']) roofHeight = parseFloat(tags['roof:levels']) * 3;
+      else roofHeight = Math.min(2.5, totalHeight * 0.25);
+      if (isNaN(roofHeight) || roofHeight <= 0) roofHeight = 0;
+      if (roofHeight >= totalHeight) roofHeight = totalHeight * 0.4;
     }
-    return mesh;
+
+    // min_height / building:min_level: elevates a building:part above ground (podium, tiered
+    // tower, wing starting above a passage...) — mirrors how blender-osm stacks building:part.
+    var minHeight = 0;
+    if (tags.min_height) minHeight = parseFloat(tags.min_height);
+    else if (tags['building:min_level']) minHeight = parseFloat(tags['building:min_level']) * 3;
+    if (isNaN(minHeight) || minHeight < 0) minHeight = 0;
+    if (minHeight >= totalHeight) minHeight = 0; // guard against bad/contradictory tagging
+
+    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight - minHeight, minHeight: minHeight };
   }
 
-  function buildFeatureMeshImpl(key, feature, color, center){
+  function buildProps(el, tags){
+    var props = { osm_id: el.id, osm_type: el.type };
+    Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
+    if (tags.building || tags['building:part']){
+      var bh = buildingHeightAndRoof(tags);
+      props.height_est_m = bh.totalHeight;
+      props.roof_shape = bh.roofShape;
+      props.roof_height_m = bh.roofHeight;
+      props.wall_height_m = bh.wallHeight;
+      props.min_height_m = bh.minHeight;
+    }
+    if (tags.barrier){
+      props.wall_height_m = (tags.barrier === 'wall') ? 1.8 : (tags.barrier === 'hedge' ? 1.2 : 1.1);
+    }
+    return props;
+  }
+
+  function elementsToGeoJSON(elements, filterFn){
+    var features = [];
+    for (var i=0; i<elements.length; i++){
+      var el = elements[i];
+
+      if (el.type === 'relation'){
+        var rtags = el.tags || {};
+        if (!filterFn(rtags) || !el.members) continue;
+        var outerRings = [], innerRings = [];
+        el.members.forEach(function(m){
+          if (!m.geometry) return;
+          var ring = m.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+          if (ring.length < 3) return;
+          (m.role === 'inner' ? innerRings : outerRings).push(ring);
+        });
+        outerRings.forEach(function(ring, idx){
+          var coordinates = [ring].concat(idx === 0 ? innerRings : []);
+          features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates: coordinates }, properties: buildProps(el, rtags) });
+        });
+        continue;
+      }
+
+      var tags = el.tags || {};
+      if (!filterFn(tags)) continue;
+
+      var geometry;
+      if (el.type === 'node'){
+        geometry = { type:'Point', coordinates:[el.lon, el.lat] };
+      } else if (el.type === 'way' && el.geometry){
+        var coords = el.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+        if (coords.length < 2) continue;
+        var closed = coords.length > 2 &&
+          coords[0][0] === coords[coords.length-1][0] &&
+          coords[0][1] === coords[coords.length-1][1];
+        if (closed && isAreaTag(tags)){
+          geometry = { type:'Polygon', coordinates:[coords] };
+        } else {
+          geometry = { type:'LineString', coordinates: coords };
+        }
+      } else {
+        continue;
+      }
+
+      features.push({ type:'Feature', geometry: geometry, properties: buildProps(el, tags) });
+    }
+    return { type:'FeatureCollection', features: features };
+  }
+
+  function isAreaTag(tags){
+    return !!tags.building || !!tags['building:part'] ||
+      tags.natural === 'water' || tags.natural === 'wood' ||
+      ['grass','forest','meadow'].indexOf(tags.landuse) !== -1;
+  }
+
+  function downloadLayer(key){
+    var entry = resultLayers[key];
+    if (!entry || !entry.fc.features.length) return;
+    var blob = new Blob([JSON.stringify(entry.fc)], { type:'application/geo+json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = key + '.geojson';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  }
+
+  // building walls (+ optional roof), returns 1-2 mesh descriptors.
+  function buildBuildingMeshDescs(geom, props, defaultColor, center){
+    var rings = ringsToPointLists(geom.coordinates, center);
+    if (!rings) return [];
+
+    var totalH = props.height_est_m || 9;
+    var roofH = props.roof_height_m || 0;
+    var minH = props.min_height_m || 0;
+    var wallH = props.wall_height_m;
+    if (!wallH || wallH < 0.3) wallH = totalH - roofH - minH;
+    if (wallH < 0.3) wallH = totalH;
+
+    var wallColor = parseOsmHexColor(props['building:colour'], defaultColor);
+
+    var out = [];
+    var wallMesh = buildExtrudedPolygon(rings.outerPts, rings.holePtsList, minH, minH+wallH);
+    if (wallMesh) out.push(tintMesh(wallMesh, wallColor, 'building'));
+
+    if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
+      var shape2 = props.roof_shape;
+      var roofGeom;
+      var builtForSkeleton = { outerPts: rings.outerPts, holePtsList: rings.holePtsList };
+      if (shape2 === 'gabled' || shape2 === 'skillion'){
+        roofGeom = buildOABBRoofGeometry(rings.outerPts, wallH, roofH, shape2);
+      } else if (shape2 === 'pyramidal'){
+        roofGeom = buildPyramidalRoofGeometry(rings.outerPts, wallH, roofH);
+      } else {
+        roofGeom = buildHipRoofSkeleton(builtForSkeleton, wallH, roofH) || buildHipRoofHeightfield(rings.outerPts, wallH, roofH);
+      }
+      if (roofGeom){
+        offsetY(roofGeom, minH);
+        var roofColor = parseOsmHexColor(props['roof:colour'], scaleColor(wallColor, 0.75));
+        out.push(tintMesh(roofGeom, roofColor, 'roof'));
+      }
+    }
+    return out;
+  }
+
+  // roads/walls/generic lines -> a chain of oriented boxes; points -> lamp/tree/furniture prop meshes.
+  // Returns an array of mesh descriptors (0 or more).
+  function buildFeatureMeshDescs(key, feature, color, center){
     var geom = feature.geometry;
     var props = feature.properties || {};
-    var mat = new THREE.MeshStandardMaterial({ color: color, roughness:0.85, metalness:0.05 });
 
     if (key === 'buildings' && geom.type === 'Polygon'){
-      return buildBuildingMesh(geom, props, mat, center);
+      return buildBuildingMeshDescs(geom, props, color, center);
     }
 
     if ((key === 'water' || key === 'vegetation') && geom.type === 'Polygon'){
-      return buildFlatAreaMesh(geom, mat, center, key === 'water' ? 0.02 : 0.03);
+      var m = buildFlatAreaMesh(geom, color, center, key === 'water' ? 0.02 : 0.03);
+      return m ? [m] : [];
     }
 
     if (geom.type === 'LineString'){
       var coords = geom.coordinates;
-      var group = new THREE.Group();
       var width, yLevel, boxHeight;
       if (key === 'roads'){ width = estimateRoadWidth(props); boxHeight = 0.15; yLevel = boxHeight/2; }
       else if (key === 'walls'){ width = 0.25; boxHeight = props.wall_height_m || 1.5; yLevel = boxHeight/2; }
       else { width = 0.6; boxHeight = 0.15; yLevel = boxHeight/2; }
+      var out = [];
       for (var i=0; i<coords.length-1; i++){
         var a = project(coords[i][1], coords[i][0], center);
         var b = project(coords[i+1][1], coords[i+1][0], center);
         var dx = b.x - a.x, dz = b.z - a.z;
         var len = Math.sqrt(dx*dx + dz*dz);
         if (len < 0.01) continue;
-        var segGeom = new THREE.BoxGeometry(len, boxHeight, width);
-        var segMesh = new THREE.Mesh(segGeom, mat);
-        segMesh.position.set((a.x+b.x)/2, yLevel, (a.z+b.z)/2);
-        segMesh.rotation.y = -Math.atan2(dz, dx);
-        group.add(segMesh);
+        var seg = buildBoxAt((a.x+b.x)/2, yLevel, (a.z+b.z)/2, len, boxHeight, width, -Math.atan2(dz, dx));
+        out.push(tintMesh(seg, color, key));
       }
-      return group;
+      return out;
     }
 
     if (geom.type === 'Point'){
       var p = project(geom.coordinates[1], geom.coordinates[0], center);
-      var group2 = new THREE.Group();
+      var out2 = [];
       if (key === 'lamps'){
-        var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08,0.08,4,8), mat);
-        pole.position.set(p.x, 2, p.z);
-        var bulb = new THREE.Mesh(new THREE.SphereGeometry(0.3,10,10), mat);
-        bulb.position.set(p.x, 4.1, p.z);
-        group2.add(pole, bulb);
+        out2.push(tintMesh(buildCylinderAt(p.x,0,p.z, 0.08,0.08,4,8), color, 'lamp-pole'));
+        out2.push(tintMesh(buildSphereAt(p.x,4.1,p.z, 0.3,8), color, 'lamp-bulb'));
       } else if (key === 'trees'){
-        var trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.2,2,8), new THREE.MeshStandardMaterial({color:0x6b4a2f}));
-        trunk.position.set(p.x, 1, p.z);
-        var canopy = new THREE.Mesh(new THREE.ConeGeometry(1.6,3.5,10), mat);
-        canopy.position.set(p.x, 3.5, p.z);
-        group2.add(trunk, canopy);
+        out2.push(tintMesh(buildCylinderAt(p.x,0,p.z, 0.15,0.2,2,8), {r:0.42,g:0.29,b:0.18}, 'tree-trunk'));
+        out2.push(tintMesh(buildCylinderAt(p.x,2,p.z, 0,1.6,3.5,10), color, 'tree-canopy'));
       } else {
-        var box = new THREE.Mesh(new THREE.BoxGeometry(0.6,0.6,0.6), mat);
-        box.position.set(p.x, 0.3, p.z);
-        group2.add(box);
+        out2.push(tintMesh(buildBoxAt(p.x,0.3,p.z, 0.6,0.6,0.6, 0), color, 'furniture'));
       }
-      return group2;
+      return out2;
     }
-    return null;
+    return [];
   }
 
-  function buildGeometryGroup(center, terrainFn){
-    var group = new THREE.Group();
-    group.name = 'zone';
+  // full mesh-descriptor list for the fetched zone, terrain-offset applied per feature — this is
+  // the single geometry pipeline consumed by both the live Cesium preview and every export format.
+  function buildZoneMeshes(center, terrainFn){
+    var meshes = [];
     Object.keys(resultLayers).forEach(function(key){
       var fc = resultLayers[key].fc;
-      var color = new THREE.Color(LAYERS[key].color);
+      var color = hexToColor(LAYERS[key].color);
       fc.features.forEach(function(f){
-        var mesh = buildFeatureMesh(key, f, color, center, terrainFn);
-        if (mesh) group.add(mesh);
+        var descs = buildFeatureMeshDescs(key, f, color, center);
+        if (!descs.length) return;
+        var dy = 0;
+        if (terrainFn){
+          var rp = representativeLonLat(f.geometry);
+          if (rp){ var pp = project(rp.lat, rp.lon, center); dy = terrainFn(pp.x, pp.z); }
+        }
+        descs.forEach(function(d){ offsetY(d, dy); meshes.push(d); });
       });
     });
-    return group;
+    return meshes;
   }
 
-  // --- 3D preview ---
-  var threeScene=null, threeCamera=null, threeRenderer=null, threeControls=null, threeAnimReq=null;
+  // --- glTF-Binary (.glb) build — the single asset both the live Cesium preview and the download
+  // button share: one geometry pipeline (buildZoneMeshes + optional ground descriptor) feeds a
+  // gltf-transform Document once, and the resulting bytes go both to Cesium.Model.fromGltfAsync
+  // (display) and to a Blob download (export). Positions are already final world-local — no scene
+  // graph / matrixWorld concept needed here at all (that whole class of bug, hit once already with
+  // THREE.OBJExporter's matrixWorld, structurally can't recur).
+  function buildGlbBinary(meshDescs, orthoBytesForTexture){
+    var GT = window.__gltfTransform;
+    var doc = new GT.Document();
+    var buffer = doc.createBuffer();
+    var scene = doc.createScene('zone');
+    var materialCache = {};
+    var orthoTextureNode = orthoBytesForTexture
+      ? doc.createTexture('ortho').setImage(orthoBytesForTexture).setMimeType('image/jpeg')
+      : null;
 
-  function buildThreeScene(){
-    var container = document.getElementById('threeWrap');
-    var old = container.querySelector('canvas');
-    if (old) old.remove();
+    function colorKey(c){ return Math.round(c.r*255)+','+Math.round(c.g*255)+','+Math.round(c.b*255); }
+    function materialFor(color, useTexture){
+      var key = (useTexture ? 'tex:' : 'c:') + colorKey(color);
+      if (materialCache[key]) return materialCache[key];
+      var mat = doc.createMaterial().setBaseColorFactor([color.r, color.g, color.b, 1]).setRoughnessFactor(0.9).setMetallicFactor(0.0);
+      if (useTexture && orthoTextureNode) mat.setBaseColorTexture(orthoTextureNode);
+      materialCache[key] = mat;
+      return mat;
+    }
 
-    var w = container.clientWidth || window.innerWidth;
-    var h = container.clientHeight || window.innerHeight;
+    // flat per-face normals, accumulated per-vertex then normalized — indexed or non-indexed.
+    function computeNormals(positions, indices){
+      var n = positions.length/3;
+      var normals = new Float32Array(n*3);
+      var idx = indices || (function(){ var a=new Uint32Array(n); for (var i=0;i<n;i++) a[i]=i; return a; })();
+      for (var t=0;t<idx.length;t+=3){
+        var ia=idx[t], ib=idx[t+1], ic=idx[t+2];
+        var ax=positions[ia*3],ay=positions[ia*3+1],az=positions[ia*3+2];
+        var bx=positions[ib*3],by=positions[ib*3+1],bz=positions[ib*3+2];
+        var cx=positions[ic*3],cy=positions[ic*3+1],cz=positions[ic*3+2];
+        var ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
+        var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+        normals[ia*3]+=nx; normals[ia*3+1]+=ny; normals[ia*3+2]+=nz;
+        normals[ib*3]+=nx; normals[ib*3+1]+=ny; normals[ib*3+2]+=nz;
+        normals[ic*3]+=nx; normals[ic*3+1]+=ny; normals[ic*3+2]+=nz;
+      }
+      for (var i2=0;i2<n;i2++){
+        var x=normals[i2*3],y=normals[i2*3+1],z=normals[i2*3+2];
+        var len=Math.hypot(x,y,z)||1;
+        normals[i2*3]=x/len; normals[i2*3+1]=y/len; normals[i2*3+2]=z/len;
+      }
+      return normals;
+    }
 
-    threeScene = new THREE.Scene();
-    threeScene.background = new THREE.Color(0x0a0b0d);
-    threeCamera = new THREE.PerspectiveCamera(50, w/h, 0.1, 20000);
-    threeRenderer = new THREE.WebGLRenderer({ antialias:true });
-    threeRenderer.setSize(w, h);
-    threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    container.appendChild(threeRenderer.domElement);
+    meshDescs.forEach(function(d){
+      if (!d || !d.positions || !d.positions.length) return;
+      var normals = computeNormals(d.positions, d.indices);
+      var posAcc = doc.createAccessor('POSITION', buffer).setType('VEC3').setArray(d.positions);
+      var normAcc = doc.createAccessor('NORMAL', buffer).setType('VEC3').setArray(normals);
+      var prim = doc.createPrimitive().setAttribute('POSITION', posAcc).setAttribute('NORMAL', normAcc);
 
-    threeScene.add(new THREE.HemisphereLight(0xbfd6ff, 0x1a1f14, 0.9));
-    var sun = new THREE.DirectionalLight(0xffffff, 0.9);
-    sun.position.set(120, 200, 80);
-    threeScene.add(sun);
-    threeScene.add(new THREE.AmbientLight(0x404050, 0.35));
+      var useTexture = !!(d.uvs && orthoTextureNode);
+      if (d.uvs){
+        var uvAcc = doc.createAccessor('TEXCOORD_0', buffer).setType('VEC2').setArray(d.uvs);
+        prim.setAttribute('TEXCOORD_0', uvAcc);
+      }
+      if (d.indices){
+        var idxAcc = doc.createAccessor('indices', buffer).setType('SCALAR').setArray(d.indices);
+        prim.setIndices(idxAcc);
+      }
+      var color = d.color || {r:1,g:1,b:1};
+      prim.setMaterial(materialFor(color, useTexture));
 
+      var glMesh = doc.createMesh().addPrimitive(prim);
+      var node = doc.createNode(d.name || 'mesh').setMesh(glMesh);
+      scene.addChild(node);
+    });
+
+    var io = new GT.WebIO();
+    return io.writeBinary(doc);
+  }
+
+  // --- .OBJ serializer, directly from mesh descriptors (replaces THREE.OBJExporter — no
+  // scene-graph / matrixWorld to forget to update, positions are already final). Non-indexed
+  // meshes (most roof functions) are emitted as flat triangle lists; indexed meshes share verts.
+  function buildObjText(meshDescs){
+    var lines = ['# geometrie extraite OSM/IGN'];
+    var vOffset = 0;
+    meshDescs.forEach(function(d, mi){
+      if (!d || !d.positions || !d.positions.length) return;
+      lines.push('o ' + (d.name || 'mesh') + '_' + mi);
+      var n = d.positions.length/3;
+      for (var i=0;i<n;i++){
+        lines.push('v ' + d.positions[i*3].toFixed(4) + ' ' + d.positions[i*3+1].toFixed(4) + ' ' + d.positions[i*3+2].toFixed(4));
+      }
+      if (d.uvs){
+        for (var i2=0;i2<n;i2++) lines.push('vt ' + d.uvs[i2*2].toFixed(5) + ' ' + d.uvs[i2*2+1].toFixed(5));
+      }
+      var idx = d.indices || (function(){ var a=new Uint32Array(n); for (var k=0;k<n;k++) a[k]=k; return a; })();
+      for (var t=0;t<idx.length;t+=3){
+        var a=idx[t]+1+vOffset, b=idx[t+1]+1+vOffset, c=idx[t+2]+1+vOffset;
+        if (d.uvs){
+          var at=idx[t]+1+vOffset, bt=idx[t+1]+1+vOffset, ct=idx[t+2]+1+vOffset;
+          lines.push('f ' + a+'/'+at + ' ' + b+'/'+bt + ' ' + c+'/'+ct);
+        } else {
+          lines.push('f ' + a + ' ' + b + ' ' + c);
+        }
+      }
+      vOffset += n;
+    });
+    return lines.join('\n') + '\n';
+  }
+
+  // --- ground descriptor (terrain-draped mesh or flat quad), same shape as a building mesh desc,
+  // with optional UVs if an orthophoto texture is available.
+  function buildGroundMeshDesc(center, extentX, extentZ, orthoTexBytes){
+    var g = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
+    if (orthoTexBytes && orthoBounds){
+      g.uvs = applyGeoUV(g.positions, orthoBounds, center);
+      g.color = {r:1,g:1,b:1};
+    } else {
+      g.color = {r:0.078,g:0.09,b:0.114};
+    }
+    g.name = 'terrain';
+    return g;
+  }
+
+  // --- live 3D display: the SAME glb bytes built for export, loaded as a Cesium.Model positioned
+  // at the zone center via an east-north-up local frame (glTF's Y-up convention is what
+  // Cesium.Model expects — matches our project()/mesh authoring convention with no axis remapping).
+  var currentModelPrimitive = null;
+  function showZoneModel(){
+    if (!fetchBounds) return Promise.resolve();
+    if (!window.__gltfTransform) { setStatus('.glb : librairie pas encore chargée, réessaie dans un instant.', true); return Promise.resolve(); }
     var center = fetchBounds.getCenter();
     var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
-    threeScene.add(buildGeometryGroup(center, terrainFn));
+    var meshes = buildZoneMeshes(center, terrainFn);
 
     var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
     var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
     var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
     var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
+    var ground = buildGroundMeshDesc(center, extentX, extentZ, orthoBytes);
+    var allMeshes = meshes.concat([ground]);
 
-    var groundGeom = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
-    var groundMat;
-    if (orthoThreeTexture && orthoBounds){
-      applyGeoUV(groundGeom, orthoBounds, center);
-      groundMat = new THREE.MeshStandardMaterial({ map: orthoThreeTexture, roughness:1, side:THREE.DoubleSide });
-    } else {
-      groundMat = new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1, side:THREE.DoubleSide });
-    }
-    threeScene.add(new THREE.Mesh(groundGeom, groundMat));
-    if (!terrainGrid && !orthoThreeTexture){
-      threeScene.add(new THREE.GridHelper(Math.max(extentX, extentZ), 40, 0x2a2f3a, 0x1c2029));
-    }
+    return buildGlbBinary(allMeshes, orthoBytes).then(function(glbBytes){
+      window.__lastGlb = glbBytes; // reused by the download button — same bytes, no rebuild
+      if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
+      var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
+      var url = URL.createObjectURL(blob);
+      return Cesium.Model.fromGltfAsync({
+        url: url,
+        modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(center.lng, center.lat, 0))
+      }).then(function(model){
+        URL.revokeObjectURL(url);
+        currentModelPrimitive = viewer.scene.primitives.add(model);
+        recenterZoneCamera(center, extentX, extentZ);
+      }).catch(function(err){
+        URL.revokeObjectURL(url);
+        setStatus('Échec affichage 3D : ' + err.message, true);
+      });
+    }).catch(function(err){
+      setStatus('Échec construction du modèle : ' + err.message, true);
+    });
+  }
 
+  function recenterZoneCamera(center, extentX, extentZ){
     var dist = Math.max(extentX, extentZ, 60);
-    threeCamera.position.set(dist*0.5, dist*0.55, dist*0.5);
-    threeCamera.lookAt(0,0,0);
-
-    threeControls = new THREE.OrbitControls(threeCamera, threeRenderer.domElement);
-    threeControls.target.set(0,0,0);
-    threeControls.enableDamping = true;
-    threeControls.dampingFactor = 0.08;
-    threeControls.update();
-
-    function animate(){
-      threeAnimReq = requestAnimationFrame(animate);
-      threeControls.update();
-      threeRenderer.render(threeScene, threeCamera);
-    }
-    animate();
-    window.addEventListener('resize', onThreeResize);
+    var originECEF = Cesium.Cartesian3.fromDegrees(center.lng, center.lat, 0);
+    var enu = Cesium.Transforms.eastNorthUpToFixedFrame(originECEF);
+    var camLocal = Cesium.Cartesian3.fromElements(dist*0.5, -dist*0.5, dist*0.55); // (east, north-negative-ish, up) offset
+    var camWorld = Cesium.Matrix4.multiplyByPoint(enu, camLocal, new Cesium.Cartesian3());
+    viewer.camera.flyTo({
+      destination: camWorld,
+      orientation: { direction: Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(originECEF, camWorld, new Cesium.Cartesian3()), new Cesium.Cartesian3()), up: Cesium.Cartesian3.UNIT_Z },
+      duration: 1.2
+    });
   }
 
-  function onThreeResize(){
-    if (!threeRenderer) return;
-    var container = document.getElementById('threeWrap');
-    var w = container.clientWidth, h = container.clientHeight;
-    threeCamera.aspect = w/h;
-    threeCamera.updateProjectionMatrix();
-    threeRenderer.setSize(w, h);
-  }
-
-  view3dBtn.addEventListener('click', function(){
+  recenterBtn.addEventListener('click', function(){
     if (!fetchBounds) return;
-    document.getElementById('threeWrap').classList.add('show');
-    buildThreeScene();
+    var center = fetchBounds.getCenter();
+    var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
+    var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
+    var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
+    var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
+    recenterZoneCamera(center, extentX, extentZ);
   });
 
-  document.getElementById('closeThreeBtn').addEventListener('click', function(){
-    document.getElementById('threeWrap').classList.remove('show');
-    if (threeAnimReq) cancelAnimationFrame(threeAnimReq);
-    window.removeEventListener('resize', onThreeResize);
-    var container = document.getElementById('threeWrap');
-    var c = container.querySelector('canvas');
-    if (c) c.remove();
-    threeRenderer = null;
-  });
-
-  // --- export .OBJ (real, works in any 3D app) ---
+  // --- export .OBJ ---
   exportObjBtn.addEventListener('click', function(){
     if (!fetchBounds) return;
     var center = fetchBounds.getCenter();
     var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
-    var exportScene = new THREE.Scene();
-    exportScene.add(buildGeometryGroup(center, terrainFn));
+    var meshes = buildZoneMeshes(center, terrainFn);
     if (terrainGrid){
-      var terrainMesh = new THREE.Mesh(buildTerrainGroundGeometry(terrainGrid, center), new THREE.MeshStandardMaterial({ color:0x808080 }));
-      terrainMesh.name = 'terrain';
-      exportScene.add(terrainMesh);
+      var g = buildTerrainGroundGeometry(terrainGrid, center);
+      g.name = 'terrain'; g.color = {r:0.5,g:0.5,b:0.5};
+      meshes = meshes.concat([g]);
     }
-    // OBJExporter reads mesh.matrixWorld directly and never updates it itself — without this,
-    // every position/rotation set via .position/.rotation (roads, walls, lamps, trees, furniture,
-    // and now min_height-offset building parts) is silently dropped from the export, since fresh
-    // objects start with an identity matrixWorld until something updates it (normally the render
-    // loop does this every frame; we never render exportScene, so it has to be forced here).
-    exportScene.updateMatrixWorld(true);
-    var exporter = new THREE.OBJExporter();
-    var objText = exporter.parse(exportScene);
+    var objText = buildObjText(meshes);
     var blob = new Blob([objText], { type:'text/plain' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -1608,125 +1692,21 @@
     setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
   });
 
-  // --- export .glb: unlike .OBJ, glTF carries materials/textures in one self-contained file —
-  // no Blender step needed to get a textured mesh. Walks the same THREE scene graph the 3D
-  // preview and .OBJ export already build, converting each Mesh into a gltf-transform Primitive
-  // (world-space positions/normals via matrixWorld, since gltf-transform has no concept of a
-  // scene graph transform the way three.js does).
-  function buildGlbBinary(exportScene, orthoBytesForTexture){
-    var GT = window.__gltfTransform;
-    var doc = new GT.Document();
-    var buffer = doc.createBuffer();
-    var scene = doc.createScene('zone');
-    var materialCache = {};
-    // texture must be created against this same `doc` instance, so it's built here rather than
-    // passed in pre-made
-    var orthoTextureNode = orthoBytesForTexture
-      ? doc.createTexture('ortho').setImage(orthoBytesForTexture).setMimeType('image/jpeg')
-      : null;
-
-    function materialFor(color, mapNode){
-      var key = (mapNode ? 'tex:' : 'c:') + color.getHexString();
-      if (materialCache[key]) return materialCache[key];
-      var mat = doc.createMaterial().setBaseColorFactor([color.r, color.g, color.b, 1]).setRoughnessFactor(0.9).setMetallicFactor(0.0);
-      if (mapNode) mat.setBaseColorTexture(mapNode);
-      materialCache[key] = mat;
-      return mat;
-    }
-
-    exportScene.traverse(function(obj){
-      if (!obj.isMesh) return;
-      var geom = obj.geometry;
-      var posAttr = geom.attributes.position;
-      if (!posAttr || !posAttr.count) return;
-      var n = posAttr.count;
-
-      var positions = new Float32Array(n*3);
-      var v = new THREE.Vector3();
-      for (var i=0;i<n;i++){
-        v.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
-        v.applyMatrix4(obj.matrixWorld);
-        positions[i*3]=v.x; positions[i*3+1]=v.y; positions[i*3+2]=v.z;
-      }
-
-      if (!geom.attributes.normal) geom.computeVertexNormals();
-      var normAttr = geom.attributes.normal;
-      var normals = new Float32Array(n*3);
-      var nm = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
-      var nv = new THREE.Vector3();
-      for (var i2=0;i2<n;i2++){
-        nv.set(normAttr.getX(i2), normAttr.getY(i2), normAttr.getZ(i2));
-        nv.applyMatrix3(nm).normalize();
-        normals[i2*3]=nv.x; normals[i2*3+1]=nv.y; normals[i2*3+2]=nv.z;
-      }
-
-      var posAcc = doc.createAccessor('POSITION', buffer).setType('VEC3').setArray(positions);
-      var normAcc = doc.createAccessor('NORMAL', buffer).setType('VEC3').setArray(normals);
-      var prim = doc.createPrimitive().setAttribute('POSITION', posAcc).setAttribute('NORMAL', normAcc);
-
-      var hasUV = !!geom.attributes.uv;
-      var useTexture = hasUV && orthoTextureNode && obj.material && obj.material.map === orthoThreeTexture;
-      if (hasUV){
-        var uvAttr = geom.attributes.uv;
-        var uvs = new Float32Array(n*2);
-        for (var i3=0;i3<n;i3++){ uvs[i3*2]=uvAttr.getX(i3); uvs[i3*2+1]=uvAttr.getY(i3); }
-        var uvAcc = doc.createAccessor('TEXCOORD_0', buffer).setType('VEC2').setArray(uvs);
-        prim.setAttribute('TEXCOORD_0', uvAcc);
-      }
-
-      if (geom.index){
-        var raw = geom.index.array;
-        var idxArr = (raw instanceof Uint32Array) ? raw : Uint32Array.from(raw);
-        var idxAcc = doc.createAccessor('indices', buffer).setType('SCALAR').setArray(idxArr);
-        prim.setIndices(idxAcc);
-      }
-
-      var color = (obj.material && obj.material.color) ? obj.material.color : new THREE.Color(0xffffff);
-      prim.setMaterial(materialFor(color, useTexture ? orthoTextureNode : null));
-
-      var glMesh = doc.createMesh().addPrimitive(prim);
-      var node = doc.createNode(obj.name || 'mesh').setMesh(glMesh);
-      scene.addChild(node);
-    });
-
-    var io = new GT.WebIO();
-    return io.writeBinary(doc);
-  }
-
   exportGlbBtn.addEventListener('click', function(){
     if (!fetchBounds) return;
     if (!window.__gltfTransform){ setStatus('.glb : librairie pas encore chargée, réessaie dans un instant.', true); return; }
-
-    var center = fetchBounds.getCenter();
-    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
-    var exportScene = new THREE.Scene();
-    exportScene.add(buildGeometryGroup(center, terrainFn));
-
-    if (terrainGrid || orthoThreeTexture){
-      var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
-      var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
-      var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
-      var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
-      var groundGeom = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
-      var groundMat;
-      if (orthoThreeTexture && orthoBounds){
-        applyGeoUV(groundGeom, orthoBounds, center);
-        groundMat = new THREE.MeshStandardMaterial({ map: orthoThreeTexture, roughness:1 });
-      } else {
-        groundMat = new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1 });
-      }
-      var groundMesh = new THREE.Mesh(groundGeom, groundMat);
-      groundMesh.name = 'terrain';
-      exportScene.add(groundMesh);
-    }
-    exportScene.updateMatrixWorld(true);
 
     exportGlbBtn.disabled = true;
     var origLabel = exportGlbBtn.textContent;
     exportGlbBtn.textContent = 'Export .glb…';
 
-    buildGlbBinary(exportScene, orthoBytes)
-    .then(function(glbBytes){
+    // reuse the exact bytes already built for the live preview when available (same pipeline,
+    // avoids rebuilding), otherwise (re)build fresh — e.g. right after a fetch, before the model
+    // has finished loading into the scene.
+    var glbPromise = window.__lastGlb ? Promise.resolve(window.__lastGlb) : showZoneModel().then(function(){ return window.__lastGlb; });
+
+    glbPromise.then(function(glbBytes){
+      if (!glbBytes) throw new Error('construction du .glb échouée, voir le statut ci-dessus');
       var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
@@ -1756,6 +1736,151 @@
     a.href = url; a.download = 'export_to_abc.py';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  // --- fetch handler ---
+  fetchBtn.addEventListener('click', function(){
+    if (!currentBounds) return;
+    var keys = selectedLayerKeys();
+    if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
+
+    var useIGN = keys.indexOf('buildings') !== -1 && document.getElementById('buildingSource').value === 'ign';
+    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && useIGN); });
+
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
+
+    var parts = [];
+    if (overpassKeys.indexOf('buildings') !== -1){
+      parts.push('way["building"](' + bbox + ');');
+      parts.push('way["building:part"](' + bbox + ');');
+      parts.push('relation["building"]["type"="multipolygon"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
+    if (overpassKeys.indexOf('walls') !== -1) parts.push('way["barrier"](' + bbox + ');');
+    if (overpassKeys.indexOf('water') !== -1){
+      parts.push('way["natural"="water"](' + bbox + ');');
+      parts.push('way["waterway"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('vegetation') !== -1){
+      parts.push('way["landuse"~"^(grass|forest|meadow)$"](' + bbox + ');');
+      parts.push('way["natural"="wood"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
+    if (overpassKeys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
+    if (overpassKeys.indexOf('furniture') !== -1){
+      parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
+      parts.push('node["highway"~"^(traffic_signals|bus_stop)$"](' + bbox + ');');
+    }
+
+    var query = parts.length ? ('[out:json][timeout:60];(' + parts.join('') + ');out geom;') : null;
+
+    fetchBtn.disabled = true;
+    setStatus('<span class="spinner"></span>Interrogation…', false, true);
+
+    resultLayers = {};
+    fetchBounds = null;
+    window.__lastGlb = null;
+    terrainGrid = null;
+    orthoBounds = null;
+    orthoBytes = null;
+    if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
+    recenterBtn.disabled = true;
+    exportObjBtn.disabled = true;
+    exportAbcBtn.disabled = true;
+    exportOrthoBtn.disabled = true;
+    exportGlbBtn.disabled = true;
+    Object.keys(LAYERS).forEach(function(k){
+      document.getElementById('count_'+k).textContent = '–';
+      document.getElementById('dl_'+k).style.display = 'none';
+    });
+
+    var OVERPASS_MIRRORS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter'
+    ];
+
+    function fetchFromMirrors(mirrors, body, lastErr){
+      if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
+      var url = mirrors[0];
+      setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'data=' + encodeURIComponent(body)
+      })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
+        return r.json();
+      })
+      .catch(function(err){
+        return fetchFromMirrors(mirrors.slice(1), body, err);
+      });
+    }
+
+    var wantRelief = document.getElementById('chkRelief').checked;
+    var wantOrtho = document.getElementById('chkOrtho').checked;
+
+    var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
+    var ignPromise = useIGN
+      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN bâtiments : ' + err.message); })
+      : Promise.resolve(null);
+    var reliefPromise = wantRelief
+      ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
+      : Promise.resolve(null);
+    var orthoPromise = wantOrtho
+      ? fetchIGNOrthophoto(currentBounds).catch(function(err){ throw new Error('IGN photo aérienne : ' + err.message); })
+      : Promise.resolve(null);
+
+    Promise.all([overpassPromise, ignPromise, reliefPromise, orthoPromise])
+    .then(function(results){
+      var elements = results[0].elements || [];
+      var ignFc = results[1];
+      terrainGrid = results[2];
+      var orthoResult = results[3];
+      orthoBounds = orthoResult ? { minLat:orthoResult.minLat, maxLat:orthoResult.maxLat, minLon:orthoResult.minLon, maxLon:orthoResult.maxLon } : null;
+      orthoBytes = orthoResult ? orthoResult.bytes : null;
+      keys.forEach(function(key){
+        var def = LAYERS[key];
+        var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
+                                                  : elementsToGeoJSON(elements, def.filter);
+        resultLayers[key] = { fc: fc };
+        document.getElementById('count_'+key).textContent = fc.features.length;
+        if (fc.features.length){
+          document.getElementById('dl_'+key).style.display = 'inline-block';
+        }
+      });
+      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
+
+      var reliefTxt = '';
+      if (terrainGrid){
+        var flatEls = [].concat.apply([], terrainGrid.elevations);
+        var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
+        reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
+      }
+      var orthoTxt = orthoResult ? ' + photo aérienne IGN' : '';
+      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+      statusEl.classList.add('ok');
+      fetchBtn.disabled = false;
+      if (total > 0){
+        fetchBounds = currentBounds;
+        recenterBtn.disabled = false;
+        exportObjBtn.disabled = false;
+        exportAbcBtn.disabled = false;
+        if (window.__gltfTransform) exportGlbBtn.disabled = false;
+        setStatus('<span class="spinner"></span>Construction du modèle 3D…', false);
+        showZoneModel().then(function(){
+          setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+          statusEl.classList.add('ok');
+        });
+      }
+      if (orthoResult) exportOrthoBtn.disabled = false;
+    })
+    .catch(function(err){
+      setStatus('Échec : ' + err.message + ' (réessaie, ou réduis la zone)', true);
+      fetchBtn.disabled = false;
+    });
   });
 
   function buildBlenderScript(center, terrain){
