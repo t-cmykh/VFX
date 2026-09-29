@@ -171,6 +171,12 @@
           <span>Relief du terrain (IGN, France)</span>
         </label>
       </div>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkOrtho">
+          <span>Photo aérienne IGN (texture le sol)</span>
+        </label>
+      </div>
     </div>
 
     <div class="section">
@@ -186,16 +192,27 @@
       <h2>Aperçu 3D & export</h2>
       <button id="view3dBtn" class="block" disabled>Vue 3D</button>
       <div class="btn-row">
+        <button id="exportGlbBtn" class="ghost block" disabled>Télécharger .glb (mesh + texture)</button>
+      </div>
+      <div class="btn-row">
         <button id="exportObjBtn" class="ghost block" disabled>Télécharger .OBJ (mesh 3D)</button>
       </div>
       <div class="btn-row">
         <button id="exportAbcBtn" class="ghost block" disabled>Script Blender → .abc</button>
       </div>
+      <div class="btn-row">
+        <button id="exportOrthoBtn" class="ghost block" disabled>Télécharger photo aérienne (.jpg)</button>
+      </div>
       <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;">
-        L'.OBJ contient déjà le mesh 3D (bâtiments extrudés, routes, mobilier) — importable tel
-        quel dans Blender/Maya/Houdini. Alembic (.abc) est un format binaire qu'aucune librairie
+        <b>.glb</b> : mesh + matériaux + photo aérienne (si cochée) dans un seul fichier autonome —
+        aucune dépendance à Blender pour la récupération, c'est le format à préférer si ton logiciel
+        le lit (Blender/Unreal/Unity/Maya récents). L'.OBJ contient déjà le mesh 3D (bâtiments
+        extrudés, routes, mobilier) — importable tel quel dans Blender/Maya/Houdini, mais sans
+        matériaux/texture (format historique). Alembic (.abc) est un format binaire qu'aucune librairie
         JS ne sait écrire de façon fiable dans un navigateur : le script Blender fait l'extrusion
         et l'export .abc natif en un clic, dans Blender.
+        Avec « Photo aérienne » coché, l'.OBJ contient les UV mais pas l'image (l'exporteur OBJ ne
+        sait pas écrire de .mtl/texture) — télécharge le .jpg séparément et réassigne-le à la main.
       </div>
     </div>
 
@@ -204,14 +221,19 @@
       les bâtiments peuvent aussi venir de la <b>BD TOPO® IGN</b> (Licence Ouverte Etalab) —
       hauteurs réelles issues de LIDAR (<code>hauteur</code>), plus fiables que les tags OSM
       souvent absents/estimés. Sélecteur « OSM / IGN » sur la ligne Bâtiments.
-      Bâtiments : toits hip/gable/skillion/pyramidal réels (pas une approximation unique) —
-      hip via un champ de hauteur (distance au bord le plus proche), correct sur n'importe quelle
-      forme de contour, pas juste les rectangles. <code>min_height</code>/<code>building:min_level</code>
+      Bâtiments : toits hip via un vrai squelette droit (<code>straight-skeleton</code>, WASM/CGAL) —
+      correct sur n'importe quelle forme de contour, y compris concave ; repli automatique sur une
+      approximation par champ de hauteur si la librairie échoue sur un contour dégénéré. Gable/
+      skillion/pyramidal via leurs méthodes dédiées. <code>min_height</code>/<code>building:min_level</code>
       gérés (socles, tours à étages). <code>building:colour</code>/<code>roof:colour</code> appliqués
       si hex valide. Cours intérieures (relations multipolygon) évidées dans l'aperçu 3D <b>et</b>
       dans l'export Blender (modifier Boolean par trou).
-      Relief : case « Relief du terrain » (IGN RGE ALTI, France) — sol et objets suivent
-      l'altitude réelle au lieu d'un plan plat, dans l'aperçu 3D, l'OBJ et le script Blender.
+      Relief : case « Relief du terrain » (IGN RGE ALTI, France) — maillage adaptatif
+      (<code>Martini</code>/RTIN, peu de triangles sur le plat, plus où le relief varie) au lieu
+      d'un plan plat, dans l'aperçu 3D, l'OBJ, le <code>.glb</code> et le script Blender.
+      Photo aérienne : case « Photo aérienne IGN » — texture le sol (pas les façades, une vue
+      aérienne ne les voit jamais) ; embarquée directement dans le <code>.glb</code>, à
+      réassigner à la main avec le <code>.jpg</code> pour l'OBJ/Blender.
       Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
     </footer>
   </div>
@@ -222,6 +244,12 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/OBJExporter.js"></script>
+<script src="https://unpkg.com/straight-skeleton@3.0.0/dist/index.js"></script>
+<script src="https://unpkg.com/@mapbox/martini@0.2.0/martini.js"></script>
+<script type="module">
+  import { Document, WebIO } from 'https://cdn.jsdelivr.net/npm/@gltf-transform/core@4.5.1/+esm';
+  window.__gltfTransform = { Document, WebIO };
+</script>
 <script>
 (function(){
   "use strict";
@@ -240,6 +268,18 @@
   var IGN_WFS = 'https://data.geopf.fr/wfs/ows';
   var IGN_ELEVATION_API = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
   var terrainGrid = null; // set after a fetch with "Relief du terrain" checked
+  var orthoBounds = null;    // {minLat,maxLat,minLon,maxLon} of the fetched aerial photo, if any
+  var orthoBytes = null;     // raw JPEG bytes (Uint8Array) — used for the .glb embed and the .jpg download
+  var orthoThreeTexture = null; // pre-loaded THREE.Texture, ready to assign synchronously in buildThreeScene
+  var IGN_ORTHO_WMS = 'https://data.geopf.fr/wms-r/wms';
+
+  // real CGAL straight-skeleton (WASM) for general hip roofs — init once, in parallel with
+  // everything else; buildHipRoofSkeleton() falls back to the heightfield approximation below
+  // if this isn't ready yet or fails on a given footprint (defensive, never blocks a fetch).
+  var skeletonReady = false;
+  var skeletonInitPromise = (typeof SkeletonBuilder !== 'undefined')
+    ? SkeletonBuilder.init().then(function(){ skeletonReady = true; }).catch(function(e){ console.warn('straight-skeleton init failed', e); })
+    : Promise.resolve();
 
   var map = L.map('map', { zoomControl:true }).setView([48.8566, 2.3522], 15); // Paris par défaut
   // tile.openstreetmap.org bloque les requêtes sans Referer correct, et CARTO exige désormais
@@ -266,6 +306,8 @@
   var view3dBtn = document.getElementById('view3dBtn');
   var exportObjBtn = document.getElementById('exportObjBtn');
   var exportAbcBtn = document.getElementById('exportAbcBtn');
+  var exportOrthoBtn = document.getElementById('exportOrthoBtn');
+  var exportGlbBtn = document.getElementById('exportGlbBtn');
 
   // --- build layer checkbox list ---
   Object.keys(LAYERS).forEach(function(key){
@@ -427,7 +469,10 @@
   // --- IGN elevation (RGE ALTI, France) : regular lat/lon grid sampled in one batched request,
   // used to drape the ground and offset every feature's placement by local terrain height.
   function fetchIGNElevationGrid(bounds){
-    var gridN = 10;
+    // 17 = 2^4+1: required shape for Martini's RTIN mesh simplification (buildTerrainGroundGeometry
+    // below). Verified the resulting IGN request URL (289 points, one batched call) stays well
+    // under URL length limits — 33x33 was tested and does fail there, 17x17 is the safe ceiling.
+    var gridN = 17;
     var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
     var lats = [], lons = [];
     for (var i=0;i<gridN;i++){
@@ -455,6 +500,81 @@
         elevations: grid, // elevations[i][j] : i = lat index (south→north), j = lon index (west→east)
         refElevation: minE // the zone's lowest sampled point becomes local y=0
       };
+    });
+  }
+
+  // IGN BD ORTHO aerial photo (~20cm/px), one GetMap call covering the exact zone bbox — used to
+  // texture the ground (and, via the .glb export, travels with the mesh instead of a separate
+  // file the user has to reassign by hand like with .OBJ). Roof texturing is NOT covered — a
+  // straight-down aerial photo never sees building walls, only rooftops/ground, and even
+  // texturing rooftops would need each roof mesh split into its own material group; out of scope
+  // for this pass, documented rather than half-implemented.
+  function fetchIGNOrthophoto(bounds){
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var latSpan = ne.lat - sw.lat, lonSpan = ne.lng - sw.lng;
+    var aspect = (lonSpan * Math.cos(((sw.lat+ne.lat)/2) * Math.PI/180)) / latSpan;
+    var W = 1024, H = 1024;
+    if (aspect > 1) H = Math.max(64, Math.round(1024/aspect)); else W = Math.max(64, Math.round(1024*aspect));
+    var url = IGN_ORTHO_WMS + '?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=HR.ORTHOIMAGERY.ORTHOPHOTOS&STYLES=' +
+      '&CRS=EPSG:4326&BBOX=' + sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng +
+      '&WIDTH=' + W + '&HEIGHT=' + H + '&FORMAT=image/jpeg';
+    return fetch(url).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (photo aérienne IGN)');
+      return r.arrayBuffer();
+    }).then(function(buf){
+      return { bytes: new Uint8Array(buf), minLat: sw.lat, maxLat: ne.lat, minLon: sw.lng, maxLon: ne.lng };
+    });
+  }
+
+  // UV mapping shared by the 3D preview and the .glb export — glTF's own convention (V=0 at the
+  // TOP/north edge of the image, increasing southward) is used as the single source of truth;
+  // the THREE.Texture built from the same bytes gets flipY=false so the preview matches it
+  // exactly, instead of computing two different UV sets for the two consumers.
+  function applyGeoUV(geometry, bounds, center){
+    var pos = geometry.attributes.position;
+    var mPerDegLat = 111320;
+    var mPerDegLon = 111320 * Math.cos(center.lat * Math.PI/180);
+    var uvs = new Float32Array(pos.count*2);
+    for (var i=0;i<pos.count;i++){
+      var lon = center.lng + pos.getX(i)/mPerDegLon;
+      var lat = center.lat - pos.getZ(i)/mPerDegLat;
+      uvs[i*2]   = (lon - bounds.minLon) / (bounds.maxLon - bounds.minLon);
+      uvs[i*2+1] = (bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat);
+    }
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  }
+
+  // flat ground quad built directly with vertices already in local (x, y, z) space — deliberately
+  // NOT a THREE.PlaneGeometry rotated into place: a rotated mesh's geometry.attributes.position
+  // stays in its own pre-rotation local frame (x, y, 0), which would silently break applyGeoUV
+  // above (it reads world-style x/z straight off the position attribute).
+  function buildFlatGroundGeometry(extentX, extentZ){
+    var hx = extentX/2, hz = extentZ/2, y = -0.05;
+    var positions = [
+      -hx,y,-hz,  hx,y,-hz,  hx,y,hz,
+      -hx,y,-hz,  hx,y,hz,  -hx,y,hz
+    ];
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // decodes fetched JPEG bytes into a ready-to-use THREE.Texture. flipY=false + sRGB encoding so
+  // the preview matches the same UV convention (and colors) as the .glb export, which embeds the
+  // same bytes raw and follows glTF's top-down V convention rather than three.js's default.
+  function loadThreeTextureFromBytes(bytes){
+    return new Promise(function(resolve, reject){
+      var blob = new Blob([bytes], { type:'image/jpeg' });
+      var url = URL.createObjectURL(blob);
+      var loader = new THREE.TextureLoader();
+      loader.load(url, function(tex){
+        tex.flipY = false;
+        if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
+        tex.needsUpdate = true;
+        URL.revokeObjectURL(url);
+        resolve(tex);
+      }, undefined, function(err){ URL.revokeObjectURL(url); reject(err); });
     });
   }
 
@@ -506,7 +626,8 @@
     };
   }
 
-  function buildTerrainGroundGeometry(terrain, center){
+  // naive full grid (2 triangles per cell, every cell emitted) — fallback if Martini isn't loaded
+  function buildTerrainGroundGeometryGrid(terrain, center){
     var n = terrain.gridN;
     var pts = [];
     for (var i=0;i<n;i++){
@@ -526,6 +647,44 @@
         positions.push(b.x,b.y,b.z, d.x,d.y,d.z, c.x,c.y,c.z);
       }
     }
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  // adaptive terrain mesh (RTIN via Martini) — fewer triangles on flat ground, more where the
+  // relief actually varies, instead of a uniform grid with every cell emitted regardless of need.
+  function buildTerrainGroundGeometry(terrain, center){
+    if (typeof Martini === 'undefined') return buildTerrainGroundGeometryGrid(terrain, center);
+    var size = terrain.gridN;
+    var flat = new Float32Array(size*size);
+    for (var i=0;i<size;i++){
+      for (var j=0;j<size;j++){ flat[i*size+j] = terrain.elevations[i][j]; }
+    }
+
+    var martini, tile, mesh;
+    try {
+      martini = new Martini(size);
+      tile = martini.createTile(flat);
+      mesh = tile.getMesh(0.2); // maxError in meters — small since the source grid is already coarse
+    } catch(e){ return buildTerrainGroundGeometryGrid(terrain, center); }
+    if (!mesh || !mesh.vertices.length) return buildTerrainGroundGeometryGrid(terrain, center);
+
+    var worldPts = [];
+    for (var v=0; v<mesh.vertices.length; v+=2){
+      var gx = mesh.vertices[v], gy = mesh.vertices[v+1];
+      var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*gy/(size-1);
+      var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*gx/(size-1);
+      var p = project(lat, lon, center);
+      worldPts.push({ x:p.x, y:(terrain.elevations[gy][gx]-terrain.refElevation)-0.05, z:p.z });
+    }
+    var positions = [];
+    for (var t=0; t<mesh.triangles.length; t+=3){
+      var a=worldPts[mesh.triangles[t]], b=worldPts[mesh.triangles[t+1]], c=worldPts[mesh.triangles[t+2]];
+      positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+    }
+
     var geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geometry.computeVertexNormals();
@@ -595,9 +754,14 @@
     resultLayers = {};
     fetchBounds = null;
     terrainGrid = null;
+    orthoBounds = null;
+    orthoBytes = null;
+    orthoThreeTexture = null;
     view3dBtn.disabled = true;
     exportObjBtn.disabled = true;
     exportAbcBtn.disabled = true;
+    exportOrthoBtn.disabled = true;
+    exportGlbBtn.disabled = true;
     Object.keys(LAYERS).forEach(function(k){
       document.getElementById('count_'+k).textContent = '–';
       document.getElementById('dl_'+k).style.display = 'none';
@@ -628,6 +792,7 @@
     }
 
     var wantRelief = document.getElementById('chkRelief').checked;
+    var wantOrtho = document.getElementById('chkOrtho').checked;
 
     var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
     var ignPromise = useIGN
@@ -636,12 +801,20 @@
     var reliefPromise = wantRelief
       ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
       : Promise.resolve(null);
+    var orthoPromise = wantOrtho
+      ? fetchIGNOrthophoto(currentBounds).catch(function(err){ throw new Error('IGN photo aérienne : ' + err.message); })
+      : Promise.resolve(null);
 
-    Promise.all([overpassPromise, ignPromise, reliefPromise])
+    Promise.all([overpassPromise, ignPromise, reliefPromise, orthoPromise])
     .then(function(results){
       var elements = results[0].elements || [];
       var ignFc = results[1];
       terrainGrid = results[2];
+      var orthoResult = results[3];
+      orthoBounds = orthoResult ? { minLat:orthoResult.minLat, maxLat:orthoResult.maxLat, minLon:orthoResult.minLon, maxLon:orthoResult.maxLon } : null;
+      orthoBytes = orthoResult ? orthoResult.bytes : null;
+      orthoThreeTexture = null;
+      var orthoTexturePromise = orthoResult ? loadThreeTextureFromBytes(orthoResult.bytes).then(function(tex){ orthoThreeTexture = tex; }) : Promise.resolve();
       keys.forEach(function(key){
         var def = LAYERS[key];
         var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
@@ -660,21 +833,27 @@
         }
       });
       var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
-      var reliefTxt = '';
-      if (terrainGrid){
-        var flatEls = [].concat.apply([], terrainGrid.elevations);
-        var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
-        reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
-      }
-      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + '.', false);
-      statusEl.classList.add('ok');
-      fetchBtn.disabled = false;
-      if (total > 0){
-        fetchBounds = currentBounds;
-        view3dBtn.disabled = false;
-        exportObjBtn.disabled = false;
-        exportAbcBtn.disabled = false;
-      }
+
+      return orthoTexturePromise.then(function(){
+        var reliefTxt = '';
+        if (terrainGrid){
+          var flatEls = [].concat.apply([], terrainGrid.elevations);
+          var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
+          reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
+        }
+        var orthoTxt = orthoResult ? ' + photo aérienne IGN' : '';
+        setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+        statusEl.classList.add('ok');
+        fetchBtn.disabled = false;
+        if (total > 0){
+          fetchBounds = currentBounds;
+          view3dBtn.disabled = false;
+          exportObjBtn.disabled = false;
+          exportAbcBtn.disabled = false;
+          if (window.__gltfTransform) exportGlbBtn.disabled = false;
+        }
+        if (orthoResult) exportOrthoBtn.disabled = false;
+      });
     })
     .catch(function(err){
       setStatus('Échec : ' + err.message + ' (réessaie, ou réduis la zone)', true);
@@ -826,11 +1005,12 @@
     var outerPts = polygonRingToPoints(coordinates[0], center);
     if (!outerPts) return null;
     var shape = new THREE.Shape(outerPts);
+    var holePtsList = [];
     coordinates.slice(1).forEach(function(ring){
       var holePts = polygonRingToPoints(ring, center);
-      if (holePts) shape.holes.push(new THREE.Path(holePts));
+      if (holePts){ shape.holes.push(new THREE.Path(holePts)); holePtsList.push(holePts); }
     });
-    return { shape: shape, outerPts: outerPts };
+    return { shape: shape, outerPts: outerPts, holePtsList: holePtsList };
   }
 
   // --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented
@@ -992,6 +1172,71 @@
     return tris;
   }
 
+  // real CGAL straight skeleton (via the `straight-skeleton` WASM package) — correct hip/valley
+  // structure for ANY polygon (concave included), with real geometric event handling instead of
+  // the heightfield approximation below. Returns null (caller falls back) if the library isn't
+  // ready yet, the polygon is degenerate, or the WASM call throws — CGAL's algorithm can fail on
+  // messy/self-intersecting real-world OSM footprints, so this must never be the only path.
+  function ringToSkeletonInput(pts, ccw){
+    var area = 0;
+    for (var i=0;i<pts.length;i++){
+      var a = pts[i], b = pts[(i+1)%pts.length];
+      area += a.x*b.y - b.x*a.y;
+    }
+    var ordered = ((area > 0) === ccw) ? pts.slice() : pts.slice().reverse();
+    var ring = ordered.map(function(p){ return [p.x, p.y]; });
+    ring.push(ring[0].slice());
+    return ring;
+  }
+
+  function buildHipRoofSkeleton(built, wallH, roofH){
+    if (!skeletonReady || typeof SkeletonBuilder === 'undefined') return null;
+    var outerPts = built.outerPts;
+    if (!outerPts || outerPts.length < 3) return null;
+
+    var polygonInput = [ ringToSkeletonInput(outerPts, true) ];
+    (built.holePtsList || []).forEach(function(h){
+      if (h.length >= 3) polygonInput.push(ringToSkeletonInput(h, false));
+    });
+
+    var skel;
+    try { skel = SkeletonBuilder.buildFromPolygon(polygonInput); }
+    catch(e){ return null; }
+    if (!skel || !skel.vertices || !skel.vertices.length || !skel.polygons || !skel.polygons.length) return null;
+
+    var maxTime = 0;
+    skel.vertices.forEach(function(v){ if (v[2] > maxTime) maxTime = v[2]; });
+    if (maxTime < 1e-6) return null;
+    var scale = roofH / maxTime;
+
+    var pts3d = skel.vertices.map(function(v){
+      return { x: v[0], z: v[1], y: wallH + scale*v[2] };
+    });
+
+    var positions = [];
+    skel.polygons.forEach(function(faceIdx){
+      if (faceIdx.length < 3) return;
+      if (faceIdx.length === 3){
+        var a=pts3d[faceIdx[0]], b=pts3d[faceIdx[1]], c=pts3d[faceIdx[2]];
+        positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+        return;
+      }
+      var flat = [];
+      faceIdx.forEach(function(idx){ flat.push(pts3d[idx].x, pts3d[idx].z); });
+      var tris = earcut(flat);
+      for (var t=0; t<tris.length; t+=3){
+        var p1=pts3d[faceIdx[tris[t]]], p2=pts3d[faceIdx[tris[t+1]]], p3=pts3d[faceIdx[tris[t+2]]];
+        positions.push(p1.x,p1.y,p1.z, p2.x,p2.y,p2.z, p3.x,p3.y,p3.z);
+      }
+    });
+    if (!positions.length) return null;
+
+    var geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
   function buildHipRoofHeightfield(outerPts, wallH, roofH){
     var tris0 = triangulateFootprint(outerPts);
     if (!tris0.length) return buildPyramidalRoofGeometry(outerPts, wallH, roofH);
@@ -1088,8 +1333,10 @@
       } else if (shape2 === 'pyramidal'){
         roofGeom = buildPyramidalRoofGeometry(built.outerPts, wallH, roofH);
       } else {
-        // hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic pitched fallback
-        roofGeom = buildHipRoofHeightfield(built.outerPts, wallH, roofH);
+        // hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic pitched fallback.
+        // Real straight-skeleton first (correct on any footprint incl. concave), heightfield
+        // approximation only if the WASM lib isn't ready or fails on this particular polygon.
+        roofGeom = buildHipRoofSkeleton(built, wallH, roofH) || buildHipRoofHeightfield(built.outerPts, wallH, roofH);
       }
       var roofColor = parseOsmHexColor(props['roof:colour'], wallColor.clone().multiplyScalar(0.75));
       var roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness:0.9, side:THREE.DoubleSide });
@@ -1250,18 +1497,16 @@
     var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
     var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
 
-    if (terrainGrid){
-      var terrainGeom = buildTerrainGroundGeometry(terrainGrid, center);
-      var terrainMesh = new THREE.Mesh(terrainGeom, new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1, side:THREE.DoubleSide }));
-      threeScene.add(terrainMesh);
+    var groundGeom = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
+    var groundMat;
+    if (orthoThreeTexture && orthoBounds){
+      applyGeoUV(groundGeom, orthoBounds, center);
+      groundMat = new THREE.MeshStandardMaterial({ map: orthoThreeTexture, roughness:1, side:THREE.DoubleSide });
     } else {
-      var ground = new THREE.Mesh(
-        new THREE.PlaneGeometry(extentX, extentZ),
-        new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1 })
-      );
-      ground.rotation.x = -Math.PI/2;
-      ground.position.y = -0.05;
-      threeScene.add(ground);
+      groundMat = new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1, side:THREE.DoubleSide });
+    }
+    threeScene.add(new THREE.Mesh(groundGeom, groundMat));
+    if (!terrainGrid && !orthoThreeTexture){
       threeScene.add(new THREE.GridHelper(Math.max(extentX, extentZ), 40, 0x2a2f3a, 0x1c2029));
     }
 
@@ -1335,6 +1580,151 @@
     a.href = url; a.download = 'zone.obj';
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  exportOrthoBtn.addEventListener('click', function(){
+    if (!orthoBytes) return;
+    var blob = new Blob([orthoBytes], { type:'image/jpeg' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'photo-aerienne.jpg';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  // --- export .glb: unlike .OBJ, glTF carries materials/textures in one self-contained file —
+  // no Blender step needed to get a textured mesh. Walks the same THREE scene graph the 3D
+  // preview and .OBJ export already build, converting each Mesh into a gltf-transform Primitive
+  // (world-space positions/normals via matrixWorld, since gltf-transform has no concept of a
+  // scene graph transform the way three.js does).
+  function buildGlbBinary(exportScene, orthoBytesForTexture){
+    var GT = window.__gltfTransform;
+    var doc = new GT.Document();
+    var buffer = doc.createBuffer();
+    var scene = doc.createScene('zone');
+    var materialCache = {};
+    // texture must be created against this same `doc` instance, so it's built here rather than
+    // passed in pre-made
+    var orthoTextureNode = orthoBytesForTexture
+      ? doc.createTexture('ortho').setImage(orthoBytesForTexture).setMimeType('image/jpeg')
+      : null;
+
+    function materialFor(color, mapNode){
+      var key = (mapNode ? 'tex:' : 'c:') + color.getHexString();
+      if (materialCache[key]) return materialCache[key];
+      var mat = doc.createMaterial().setBaseColorFactor([color.r, color.g, color.b, 1]).setRoughnessFactor(0.9).setMetallicFactor(0.0);
+      if (mapNode) mat.setBaseColorTexture(mapNode);
+      materialCache[key] = mat;
+      return mat;
+    }
+
+    exportScene.traverse(function(obj){
+      if (!obj.isMesh) return;
+      var geom = obj.geometry;
+      var posAttr = geom.attributes.position;
+      if (!posAttr || !posAttr.count) return;
+      var n = posAttr.count;
+
+      var positions = new Float32Array(n*3);
+      var v = new THREE.Vector3();
+      for (var i=0;i<n;i++){
+        v.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+        v.applyMatrix4(obj.matrixWorld);
+        positions[i*3]=v.x; positions[i*3+1]=v.y; positions[i*3+2]=v.z;
+      }
+
+      if (!geom.attributes.normal) geom.computeVertexNormals();
+      var normAttr = geom.attributes.normal;
+      var normals = new Float32Array(n*3);
+      var nm = new THREE.Matrix3().getNormalMatrix(obj.matrixWorld);
+      var nv = new THREE.Vector3();
+      for (var i2=0;i2<n;i2++){
+        nv.set(normAttr.getX(i2), normAttr.getY(i2), normAttr.getZ(i2));
+        nv.applyMatrix3(nm).normalize();
+        normals[i2*3]=nv.x; normals[i2*3+1]=nv.y; normals[i2*3+2]=nv.z;
+      }
+
+      var posAcc = doc.createAccessor('POSITION', buffer).setType('VEC3').setArray(positions);
+      var normAcc = doc.createAccessor('NORMAL', buffer).setType('VEC3').setArray(normals);
+      var prim = doc.createPrimitive().setAttribute('POSITION', posAcc).setAttribute('NORMAL', normAcc);
+
+      var hasUV = !!geom.attributes.uv;
+      var useTexture = hasUV && orthoTextureNode && obj.material && obj.material.map === orthoThreeTexture;
+      if (hasUV){
+        var uvAttr = geom.attributes.uv;
+        var uvs = new Float32Array(n*2);
+        for (var i3=0;i3<n;i3++){ uvs[i3*2]=uvAttr.getX(i3); uvs[i3*2+1]=uvAttr.getY(i3); }
+        var uvAcc = doc.createAccessor('TEXCOORD_0', buffer).setType('VEC2').setArray(uvs);
+        prim.setAttribute('TEXCOORD_0', uvAcc);
+      }
+
+      if (geom.index){
+        var raw = geom.index.array;
+        var idxArr = (raw instanceof Uint32Array) ? raw : Uint32Array.from(raw);
+        var idxAcc = doc.createAccessor('indices', buffer).setType('SCALAR').setArray(idxArr);
+        prim.setIndices(idxAcc);
+      }
+
+      var color = (obj.material && obj.material.color) ? obj.material.color : new THREE.Color(0xffffff);
+      prim.setMaterial(materialFor(color, useTexture ? orthoTextureNode : null));
+
+      var glMesh = doc.createMesh().addPrimitive(prim);
+      var node = doc.createNode(obj.name || 'mesh').setMesh(glMesh);
+      scene.addChild(node);
+    });
+
+    var io = new GT.WebIO();
+    return io.writeBinary(doc);
+  }
+
+  exportGlbBtn.addEventListener('click', function(){
+    if (!fetchBounds) return;
+    if (!window.__gltfTransform){ setStatus('.glb : librairie pas encore chargée, réessaie dans un instant.', true); return; }
+
+    var center = fetchBounds.getCenter();
+    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
+    var exportScene = new THREE.Scene();
+    exportScene.add(buildGeometryGroup(center, terrainFn));
+
+    if (terrainGrid || orthoThreeTexture){
+      var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
+      var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
+      var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
+      var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
+      var groundGeom = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
+      var groundMat;
+      if (orthoThreeTexture && orthoBounds){
+        applyGeoUV(groundGeom, orthoBounds, center);
+        groundMat = new THREE.MeshStandardMaterial({ map: orthoThreeTexture, roughness:1 });
+      } else {
+        groundMat = new THREE.MeshStandardMaterial({ color:0x14171d, roughness:1 });
+      }
+      var groundMesh = new THREE.Mesh(groundGeom, groundMat);
+      groundMesh.name = 'terrain';
+      exportScene.add(groundMesh);
+    }
+    exportScene.updateMatrixWorld(true);
+
+    exportGlbBtn.disabled = true;
+    var origLabel = exportGlbBtn.textContent;
+    exportGlbBtn.textContent = 'Export .glb…';
+
+    buildGlbBinary(exportScene, orthoBytes)
+    .then(function(glbBytes){
+      var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = 'zone.glb';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+      exportGlbBtn.disabled = false;
+      exportGlbBtn.textContent = origLabel;
+    })
+    .catch(function(err){
+      setStatus('Échec export .glb : ' + err.message, true);
+      exportGlbBtn.disabled = false;
+      exportGlbBtn.textContent = origLabel;
+    });
   });
 
   // --- export .abc: no JS library writes real Alembic in-browser, so this generates a
