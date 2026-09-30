@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>Extracteur géométries OSM — layout VFX</title>
+<meta name="theme-color" content="#0e1013">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/icon.svg">
 <link href="https://unpkg.com/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>
   :root{
@@ -131,7 +135,7 @@
 <div id="app">
   <div id="map">
     <div id="cesiumContainer"></div>
-    <div class="draw-hint" id="drawHint">Touche/clique deux points sur le globe pour fixer les coins de la zone</div>
+    <div class="draw-hint" id="drawHint">Glisse sur le globe pour dessiner la zone, relâche pour valider</div>
     <div class="map-hint">Glisser : déplacer · molette / pincer : zoom · clic droit / deux doigts : orbiter</div>
   </div>
 
@@ -154,6 +158,7 @@
       <button id="drawBtn" class="block primary">Dessiner une zone</button>
       <div id="zoneInfo">Aucune zone sélectionnée.</div>
       <div id="areaWarn"></div>
+      <button id="copyZoneLinkBtn" class="ghost block" disabled style="margin-top:8px;font-size:12px;">🔗 Copier le lien de cette zone</button>
       <div class="layer-row" style="padding-top:10px;">
         <label>
           <input type="checkbox" id="chkRelief">
@@ -338,6 +343,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
   var areaWarnEl = document.getElementById('areaWarn');
   var fetchBtn = document.getElementById('fetchBtn');
   var drawBtn = document.getElementById('drawBtn');
+  var copyZoneLinkBtn = document.getElementById('copyZoneLinkBtn');
   var statusEl = document.getElementById('status');
   var layerListEl = document.getElementById('layerList');
 
@@ -503,6 +509,34 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     });
   }
 
+  // --- shareable zone link: encodes the drawn bbox in the URL hash (#bbox=west,south,east,north)
+  // so a teammate opening the link lands on the exact same zone, already drawn — copied on demand
+  // (not auto-synced on every draw, to avoid rewriting the address bar/history behind the user).
+  copyZoneLinkBtn.addEventListener('click', function(){
+    if (!currentBounds) return;
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var url = new URL(location.href);
+    url.hash = 'bbox=' + [sw.lng, sw.lat, ne.lng, ne.lat].join(',');
+    var text = url.toString();
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+      .then(function(){ setStatus('Lien de la zone copié.', false); })
+      .catch(function(){
+        window.prompt('Copie ce lien :', text);
+      });
+  });
+
+  function restoreZoneFromHash(){
+    if (location.hash.indexOf('bbox=') !== 0 && location.hash.indexOf('#bbox=') !== 0) return;
+    var raw = location.hash.replace(/^#?bbox=/, '');
+    var v = raw.split(',').map(Number);
+    if (v.length !== 4 || v.some(function(n){ return isNaN(n); })) return;
+    var west = v[0], south = v[1], east = v[2], north = v[3];
+    currentBounds = makeBounds(south, west, north, east);
+    setZoneEntity(currentBounds);
+    updateZoneInfo();
+    viewer.camera.setView({ destination: Cesium.Rectangle.fromDegrees(west, south, east, north) });
+  }
+
   // --- build layer checkbox list ---
   Object.keys(LAYERS).forEach(function(key){
     var def = LAYERS[key];
@@ -551,8 +585,10 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
       zoneInfoEl.classList.remove('has-zone');
       areaWarnEl.className = '';
       fetchBtn.disabled = true;
+      copyZoneLinkBtn.disabled = true;
       return;
     }
+    copyZoneLinkBtn.disabled = false;
     var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
     var area = bboxAreaKm2(currentBounds);
     zoneInfoEl.classList.add('has-zone');
@@ -575,14 +611,12 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     }
   }
 
-  // --- draw a zone: tap/click two corners on the globe ---
-  drawBtn.addEventListener('click', function(){
-    drawing = true;
-    firstPoint = null;
-    drawHint.classList.add('show');
-    viewer.canvas.style.cursor = 'crosshair';
-  });
-
+  // --- draw a zone: press-drag-release a rectangle on the globe, with a live preview while
+  // dragging (touch drag works the same way — Cesium maps single-touch to the same LEFT_DOWN/
+  // MOUSE_MOVE/LEFT_UP event types). Camera panning/rotation is explicitly suspended for the
+  // duration of the drag (screenSpaceCameraController.enableInputs = false) — without this the
+  // globe's own default drag-to-pan fires on the same gesture and the camera moves underneath the
+  // rectangle while it's being drawn, fighting the selection instead of just drawing it.
   function pickCartographicDegrees(screenPosition){
     var cartesian = viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
     if (!cartesian) return null;
@@ -590,23 +624,45 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     return { lat: Cesium.Math.toDegrees(carto.latitude), lng: Cesium.Math.toDegrees(carto.longitude) };
   }
 
+  drawBtn.addEventListener('click', function(){
+    drawing = true;
+    firstPoint = null;
+    drawHint.classList.add('show');
+    viewer.canvas.style.cursor = 'crosshair';
+  });
+
   var clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
-  clickHandler.setInputAction(function(click){
+
+  clickHandler.setInputAction(function(down){
     if (!drawing) return;
-    var p = pickCartographicDegrees(click.position);
+    var p = pickCartographicDegrees(down.position);
     if (!p) return;
-    if (!firstPoint){
-      firstPoint = p;
-      return;
+    firstPoint = p;
+    viewer.scene.screenSpaceCameraController.enableInputs = false;
+    setZoneEntity(makeBounds(p.lat, p.lng, p.lat, p.lng));
+  }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+  clickHandler.setInputAction(function(move){
+    if (!drawing || !firstPoint) return;
+    var p = pickCartographicDegrees(move.endPosition);
+    if (!p) return;
+    setZoneEntity(makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng));
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+  clickHandler.setInputAction(function(up){
+    if (!drawing || !firstPoint) return;
+    var p = pickCartographicDegrees(up.position);
+    if (p){
+      currentBounds = makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng);
+      setZoneEntity(currentBounds);
+      updateZoneInfo();
     }
-    currentBounds = makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng);
-    setZoneEntity(currentBounds);
     drawing = false;
     firstPoint = null;
     drawHint.classList.remove('show');
     viewer.canvas.style.cursor = '';
-    updateZoneInfo();
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    viewer.scene.screenSpaceCameraController.enableInputs = true;
+  }, Cesium.ScreenSpaceEventType.LEFT_UP);
 
   // --- search / geocode (Nominatim) ---
   document.getElementById('searchBtn').addEventListener('click', doSearch);
@@ -2611,7 +2667,14 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     ].join('\n');
   }
 
+  restoreZoneFromHash();
   updateZoneInfo();
+
+  if ('serviceWorker' in navigator){
+    window.addEventListener('load', function(){
+      navigator.serviceWorker.register('./sw.js').catch(function(err){ console.warn('SW registration failed', err); });
+    });
+  }
 })();
 </script>
 </body>
