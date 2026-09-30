@@ -320,6 +320,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
   var IGN_WFS = 'https://data.geopf.fr/wfs/ows';
   var IGN_ELEVATION_API = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
   var terrainGrid = null; // set after a fetch with "Relief du terrain" checked
+  var osm2worldMeshDescs = null; // set after a fetch with "Source des bâtiments" = OSM2World (ready-made mesh descs)
   var orthoBounds = null;    // {minLat,maxLat,minLon,maxLon} of the fetched aerial photo, if any
   var orthoBytes = null;     // raw JPEG bytes (Uint8Array) — used for the .glb embed and the .jpg download
   var IGN_ORTHO_WMS = 'https://data.geopf.fr/wms-r/wms';
@@ -332,6 +333,32 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
   // version kept hitting (the Lyon mesh being the clearest example — see LYON_MESH_BASE above).
   function apiProxy(url){ return '/api/proxy?url=' + encodeURIComponent(url); }
   function lyonProxy(relPath){ return '/api/lyon/' + relPath; }
+
+  var OVERPASS_MIRRORS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.openstreetmap.ru/api/interpreter'
+  ];
+
+  // shared by the JSON query (elementsToGeoJSON path) and the XML query (OSM2World path below) —
+  // same mirror/retry logic, only the expected response type differs.
+  function fetchOverpassFromMirrors(mirrors, body, responseType, lastErr){
+    if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
+    var url = mirrors[0];
+    setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
+    return fetch(apiProxy(url), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: 'data=' + encodeURIComponent(body)
+    })
+    .then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
+      return responseType === 'text' ? r.text() : r.json();
+    })
+    .catch(function(err){
+      return fetchOverpassFromMirrors(mirrors.slice(1), body, responseType, err);
+    });
+  }
 
   // real CGAL straight-skeleton (WASM) for general hip roofs — init once, in parallel with
   // everything else; buildHipRoofSkeleton() falls back to the heightfield approximation below
@@ -602,6 +629,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
       ? '<select id="buildingSource" class="src-select" title="Source des bâtiments">' +
           '<option value="osm" selected>OSM</option>' +
           '<option value="ign">IGN (France)</option>' +
+          '<option value="osm2world">OSM2World (qualité Blosm)</option>' +
         '</select>'
       : '';
     row.innerHTML =
@@ -778,6 +806,136 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
       });
       return { type:'FeatureCollection', features: features };
     });
+  }
+
+  // --- OSM2World (MIT, https://osm2world.org) : richer building geometry (real roof shapes,
+  // windows, per-material coloring) than our own JS extrusion, run as a Java subprocess by the
+  // local backend (/api/osm2world/convert — see server.py; 501 if Java/the jar aren't installed,
+  // cf. README). We fetch a dedicated Overpass query here because OSM2World needs real .osm XML,
+  // not the GeoJSON the rest of this tool works with — the JSON query used for every other layer
+  // can't be reused as-is.
+  function fetchOsm2WorldBuildingMeshes(bounds){
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
+    var query = '[out:xml][timeout:60];(' +
+      'way["building"](' + bbox + ');' +
+      'way["building:part"](' + bbox + ');' +
+      'relation["building"]["type"="multipolygon"](' + bbox + ');' +
+      ');out geom;';
+    var center = bounds.getCenter();
+    return fetchOverpassFromMirrors(OVERPASS_MIRRORS, query, 'text').then(function(osmXml){
+      return fetch('/api/osm2world/convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/xml' },
+        body: osmXml
+      });
+    }).then(function(r){
+      if (!r.ok) return r.json().then(function(e){ throw new Error(e.detail || ('HTTP ' + r.status)); });
+      return r.json();
+    }).then(function(data){
+      return parseOsm2WorldObj(data.obj, data.mtl, center);
+    });
+  }
+
+  // Minimal OBJ+MTL reader tailored to what OSM2World actually emits (verified against a real
+  // 0.4.0 build, not just the spec) — not a general-purpose OBJ parser. Faces become a flat,
+  // non-indexed triangle soup grouped by material (same "most roof functions" convention as the
+  // rest of this file, cf. buildObjText above), one mesh descriptor per material so each keeps its
+  // own flat Kd color. Vertex positions are reprojected from OSM2World's own local origin (printed
+  // in its OBJ header comment) onto this scene's local frame via the same project() used everywhere
+  // else — both use the identical axis convention (X=east, Y=up, -Z=north, 1 unit=1m), confirmed by
+  // OSM2World's own "North direction: (0.0, 0.0, -1.0)" header comment, so no axis remap is needed,
+  // only a translation.
+  function parseOsm2WorldObj(objText, mtlText, center){
+    var mtlColors = {};
+    (mtlText || '').split(/\r?\n/).forEach(function(line){
+      var mNew = line.match(/^newmtl\s+(\S+)/);
+      if (mNew){ mtlColors.__cur = mNew[1]; return; }
+      var mKd = line.match(/^Kd\s+([\d.eE+-]+)\s+([\d.eE+-]+)\s+([\d.eE+-]+)/);
+      if (mKd && mtlColors.__cur){
+        mtlColors[mtlColors.__cur] = { r: parseFloat(mKd[1]), g: parseFloat(mKd[2]), b: parseFloat(mKd[3]) };
+      }
+    });
+    delete mtlColors.__cur;
+
+    var originMatch = objText.match(/Coordinate origin \(0,0,0\): lat ([\-0-9.]+), lon ([\-0-9.]+)/);
+    var offX = 0, offZ = 0;
+    if (originMatch){
+      var off = project(parseFloat(originMatch[1]), parseFloat(originMatch[2]), center);
+      offX = off.x; offZ = off.z;
+    }
+
+    var vx = [0], vy = [0], vz = [0]; // 1-based like OBJ indices — index 0 unused
+    var tu = [0], tv = [0];
+    var groups = {}; // materialName -> { positions:[], uvs:[] }
+    var curMat = 'default';
+    var curName = '';
+    var skipCurrent = false; // true while inside OSM2World's flat "SurfaceArea" fallback ground
+
+    function groupFor(mat){
+      if (!groups[mat]) groups[mat] = { positions: [], uvs: [] };
+      return groups[mat];
+    }
+    // v and vt indices are independent counters in OBJ (a face token "5/2" means vertex #5, uv #2) —
+    // each face-vertex ref carries both, they are NOT interchangeable despite often lining up in
+    // simple exports.
+    function pushVert(g, ref){
+      g.positions.push(vx[ref.v] + offX, vy[ref.v], vz[ref.v] + offZ);
+      if (ref.t !== undefined && tu[ref.t] !== undefined){ g.uvs.push(tu[ref.t], tv[ref.t]); }
+    }
+
+    objText.split(/\r?\n/).forEach(function(line){
+      if (line.charCodeAt(0) === 118 /* 'v' */){
+        if (line[1] === ' '){
+          var p = line.substring(2).trim().split(/\s+/);
+          vx.push(parseFloat(p[0])); vy.push(parseFloat(p[1])); vz.push(parseFloat(p[2]));
+          return;
+        }
+        if (line[1] === 't' && line[2] === ' '){
+          var t = line.substring(3).trim().split(/\s+/);
+          tu.push(parseFloat(t[0])); tv.push(parseFloat(t[1]));
+          return;
+        }
+        return; // vn (normals) : recomputed by buildGlbBinary/computeNormals, not needed here
+      }
+      if (line.substring(0,2) === 'o ' || line.substring(0,2) === 'g '){
+        curName = line.substring(2).trim();
+        skipCurrent = /^SurfaceArea/i.test(curName); // belt-and-suspenders alongside createTerrain=false
+        return;
+      }
+      if (line.substring(0,7) === 'usemtl '){
+        curMat = line.substring(7).trim();
+        return;
+      }
+      if (line[0] === 'f' && line[1] === ' '){
+        if (skipCurrent || /^TERRAIN_/i.test(curMat)) return;
+        var refs = line.substring(2).trim().split(/\s+/).map(function(tok){
+          var parts = tok.split('/');
+          var vIdx = parseInt(parts[0], 10);
+          var tIdx = parts[1] ? parseInt(parts[1], 10) : undefined;
+          vIdx = vIdx < 0 ? (vx.length + vIdx) : vIdx; // OBJ allows negative = relative-to-end indices
+          if (tIdx !== undefined) tIdx = tIdx < 0 ? (tu.length + tIdx) : tIdx;
+          return { v: vIdx, t: tIdx };
+        });
+        var g = groupFor(curMat);
+        // fan-triangulate defensively; OSM2World's own output is already all-triangles in practice
+        for (var i=1;i<refs.length-1;i++){
+          pushVert(g, refs[0]); pushVert(g, refs[i]); pushVert(g, refs[i+1]);
+        }
+      }
+    });
+
+    return Object.keys(groups).map(function(mat){
+      var g = groups[mat];
+      if (!g.positions.length) return null;
+      var hasUv = g.uvs.length === (g.positions.length/3)*2;
+      return {
+        positions: new Float32Array(g.positions),
+        uvs: hasUv ? new Float32Array(g.uvs) : undefined,
+        color: mtlColors[mat] || { r:0.7, g:0.7, b:0.7 },
+        name: 'osm2world_' + mat
+      };
+    }).filter(Boolean);
   }
 
   // --- IGN elevation (RGE ALTI, France) : regular lat/lon grid sampled in one batched request,
@@ -1742,6 +1900,21 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
         descs.forEach(function(d){ offsetY(d, dy); meshes.push(d); });
       });
     });
+    if (osm2worldMeshDescs && osm2worldMeshDescs.length){
+      // already-complete meshes (walls/roof/windows), positions already reprojected onto this
+      // scene's local frame in fetchOsm2WorldBuildingMeshes — only a single terrain offset makes
+      // sense here (one dy for the whole batch, sampled at the zone center: OSM2World doesn't hand
+      // us a per-building geo-reference we could drape individually like the other sources above).
+      // buildZoneMeshes can run more than once per fetch (preview, then export) — osm2worldMeshDescs
+      // itself must stay pristine across calls, so offsetY (which mutates in place) runs on a
+      // cloned positions array each time rather than on the stored originals.
+      var dyAll = terrainFn ? terrainFn(0, 0) : 0;
+      osm2worldMeshDescs.forEach(function(d){
+        var copy = { positions: new Float32Array(d.positions), uvs: d.uvs, indices: d.indices, color: d.color, name: d.name };
+        offsetY(copy, dyAll);
+        meshes.push(copy);
+      });
+    }
     return meshes;
   }
 
@@ -2018,8 +2191,10 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     var keys = selectedLayerKeys();
     if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
 
-    var useIGN = keys.indexOf('buildings') !== -1 && document.getElementById('buildingSource').value === 'ign';
-    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && useIGN); });
+    var buildingSourceVal = document.getElementById('buildingSource').value;
+    var useIGN = keys.indexOf('buildings') !== -1 && buildingSourceVal === 'ign';
+    var useOsm2World = keys.indexOf('buildings') !== -1 && buildingSourceVal === 'osm2world';
+    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && (useIGN || useOsm2World)); });
 
     var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
     var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
@@ -2056,6 +2231,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
     fetchBounds = null;
     window.__lastGlb = null;
     terrainGrid = null;
+    osm2worldMeshDescs = null;
     orthoBounds = null;
     orthoBytes = null;
     if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
@@ -2069,36 +2245,15 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
       document.getElementById('dl_'+k).style.display = 'none';
     });
 
-    var OVERPASS_MIRRORS = [
-      'https://overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter',
-      'https://overpass.openstreetmap.ru/api/interpreter'
-    ];
-
-    function fetchFromMirrors(mirrors, body, lastErr){
-      if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
-      var url = mirrors[0];
-      setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
-      return fetch(apiProxy(url), {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: 'data=' + encodeURIComponent(body)
-      })
-      .then(function(r){
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
-        return r.json();
-      })
-      .catch(function(err){
-        return fetchFromMirrors(mirrors.slice(1), body, err);
-      });
-    }
-
     var wantRelief = document.getElementById('chkRelief').checked;
     var wantOrtho = document.getElementById('chkOrtho').checked;
 
-    var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
+    var overpassPromise = query ? fetchOverpassFromMirrors(OVERPASS_MIRRORS, query, 'json') : Promise.resolve({ elements: [] });
     var ignPromise = useIGN
       ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN bâtiments : ' + err.message); })
+      : Promise.resolve(null);
+    var osm2worldPromise = useOsm2World
+      ? fetchOsm2WorldBuildingMeshes(currentBounds).catch(function(err){ throw new Error('OSM2World : ' + err.message); })
       : Promise.resolve(null);
     var reliefPromise = wantRelief
       ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
@@ -2107,16 +2262,26 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
       ? fetchIGNOrthophoto(currentBounds).catch(function(err){ throw new Error('IGN photo aérienne : ' + err.message); })
       : Promise.resolve(null);
 
-    Promise.all([overpassPromise, ignPromise, reliefPromise, orthoPromise])
+    Promise.all([overpassPromise, ignPromise, osm2worldPromise, reliefPromise, orthoPromise])
     .then(function(results){
       var elements = results[0].elements || [];
       var ignFc = results[1];
-      terrainGrid = results[2];
-      var orthoResult = results[3];
+      osm2worldMeshDescs = results[2]; // null unless useOsm2World — array of ready-made mesh descs, cf. buildZoneMeshes
+      terrainGrid = results[3];
+      var orthoResult = results[4];
       orthoBounds = orthoResult ? { minLat:orthoResult.minLat, maxLat:orthoResult.maxLat, minLon:orthoResult.minLon, maxLon:orthoResult.maxLon } : null;
       orthoBytes = orthoResult ? orthoResult.bytes : null;
+      var buildingsSourceTxt = useIGN ? ' (bâtiments : IGN)' : (useOsm2World ? ' (bâtiments : OSM2World)' : '');
       keys.forEach(function(key){
         var def = LAYERS[key];
+        if (key === 'buildings' && useOsm2World){
+          // not a GeoJSON source — osm2worldMeshDescs (ready-made mesh descriptors, already in the
+          // local scene frame) feeds buildZoneMeshes directly instead, cf. fetchOsm2WorldBuildingMeshes.
+          resultLayers[key] = { fc: { type:'FeatureCollection', features: [] } };
+          var n = osm2worldMeshDescs ? osm2worldMeshDescs.length : 0;
+          document.getElementById('count_'+key).textContent = n ? (n + ' groupes (OSM2World)') : '0';
+          return;
+        }
         var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
                                                   : elementsToGeoJSON(elements, def.filter);
         resultLayers[key] = { fc: fc };
@@ -2125,7 +2290,8 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
           document.getElementById('dl_'+key).style.display = 'inline-block';
         }
       });
-      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
+      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0)
+        + (useOsm2World && osm2worldMeshDescs ? osm2worldMeshDescs.length : 0);
 
       var reliefTxt = '';
       if (terrainGrid){
@@ -2134,7 +2300,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
         reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
       }
       var orthoTxt = orthoResult ? ' + photo aérienne IGN' : '';
-      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+      setStatus(total + ' géométries récupérées' + buildingsSourceTxt + reliefTxt + orthoTxt + '.', false);
       statusEl.classList.add('ok');
       fetchBtn.disabled = false;
       if (total > 0){
@@ -2145,7 +2311,7 @@ window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
         if (window.__gltfTransform) exportGlbBtn.disabled = false;
         setStatus('<span class="spinner"></span>Construction du modèle 3D…', false);
         showZoneModel().then(function(){
-          setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+          setStatus(total + ' géométries récupérées' + buildingsSourceTxt + reliefTxt + orthoTxt + '.', false);
           statusEl.classList.add('ok');
         });
       }
