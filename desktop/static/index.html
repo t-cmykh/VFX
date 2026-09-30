@@ -1,0 +1,2733 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+<title>Extracteur géométries OSM — layout VFX</title>
+<meta name="theme-color" content="#0e1013">
+<link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+<link href="https://unpkg.com/cesium@1.145.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0e1013; --panel:#161920; --panel2:#1d212b; --border:#2a2f3a;
+    --text:#e7e9ee; --muted:#8a91a3; --accent:#ff8a3d; --accent-dim:#7a4224;
+    --ok:#3ddc84; --warn:#ffcf4d; --danger:#ff5c5c;
+    --c-building:#4da3ff; --c-road:#ffd23f; --c-lamp:#ff8a3d; --c-tree:#3ddc84; --c-furniture:#c792ea;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;padding:0;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--bg); color:var(--text); overflow:hidden;
+  }
+  #app{display:flex; height:100%; width:100%;}
+  #map{flex:1; height:100%; background:#0a0b0d; position:relative;}
+  #cesiumContainer{position:absolute; inset:0;}
+  #panel{
+    width:360px; min-width:360px; height:100%; background:var(--panel);
+    border-left:1px solid var(--border); display:flex; flex-direction:column;
+    overflow-y:auto;
+  }
+  header.brand{
+    padding:16px 18px 14px; border-bottom:1px solid var(--border);
+  }
+  header.brand h1{font-size:15px; margin:0 0 3px; letter-spacing:.02em; font-weight:700;}
+  header.brand p{margin:0; font-size:12px; color:var(--muted); line-height:1.4;}
+
+  .section{padding:16px 18px; border-bottom:1px solid var(--border);}
+  .section h2{
+    font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+    margin:0 0 10px; font-weight:700;
+  }
+
+  .search-row{display:flex; gap:8px;}
+  input[type="text"]{
+    flex:1; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    padding:9px 10px; border-radius:6px; font-size:13px; min-width:0;
+  }
+  input[type="text"]:focus{outline:none; border-color:var(--accent);}
+  button{
+    font-family:inherit; font-size:13px; font-weight:600; border-radius:6px; border:1px solid var(--border);
+    background:var(--panel2); color:var(--text); padding:9px 12px; cursor:pointer;
+  }
+  button:hover{border-color:var(--accent);}
+  button:disabled{opacity:.4; cursor:not-allowed;}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#1a0f04;}
+  button.primary:hover{filter:brightness(1.08);}
+  button.block{width:100%;}
+  button.ghost{background:transparent;}
+
+  .layer-row{
+    display:flex; align-items:center; gap:10px; padding:7px 0; font-size:13px;
+  }
+  .layer-row label{flex:1; display:flex; align-items:center; gap:9px; cursor:pointer; user-select:none;}
+  .swatch{width:11px; height:11px; border-radius:3px; flex:none;}
+  .layer-row input[type="checkbox"]{
+    width:16px; height:16px; accent-color:var(--accent); cursor:pointer; flex:none;
+  }
+  .layer-count{
+    font-variant-numeric:tabular-nums; font-size:11px; color:var(--muted);
+    background:var(--panel2); padding:2px 7px; border-radius:10px; min-width:26px; text-align:center;
+  }
+  .layer-dl{
+    font-size:11px; padding:5px 8px; border-radius:5px;
+  }
+  .src-select{
+    font-size:10.5px; background:var(--panel2); color:var(--text); border:1px solid var(--border);
+    border-radius:5px; padding:3px 4px; flex:none; max-width:96px;
+  }
+
+  #zoneInfo{
+    font-size:12px; color:var(--muted); line-height:1.6; margin-top:2px;
+  }
+  #zoneInfo.has-zone{color:var(--text);}
+  #areaWarn{font-size:12px; margin-top:6px; padding:8px 10px; border-radius:6px; display:none;}
+  #areaWarn.warn{display:block; background:rgba(255,207,77,.12); color:var(--warn); border:1px solid rgba(255,207,77,.3);}
+  #areaWarn.danger{display:block; background:rgba(255,92,92,.12); color:var(--danger); border:1px solid rgba(255,92,92,.3);}
+
+  #status{
+    font-size:12px; color:var(--muted); min-height:16px; margin-top:10px; line-height:1.5;
+  }
+  #status.error{color:var(--danger);}
+  #status.ok{color:var(--ok);}
+
+  .spinner{
+    width:12px; height:12px; border:2px solid var(--border); border-top-color:var(--accent);
+    border-radius:50%; display:inline-block; animation:spin .7s linear infinite; vertical-align:-2px; margin-right:6px;
+  }
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  .btn-row{display:flex; gap:8px; margin-top:10px;}
+
+  footer.note{
+    padding:14px 18px 20px; font-size:11px; color:var(--muted); line-height:1.6;
+  }
+  footer.note code{background:var(--panel2); padding:1px 5px; border-radius:4px;}
+
+  #map{position:relative;}
+  .draw-hint{
+    position:absolute; top:14px; left:14px; z-index:1000; background:rgba(16,18,22,.92);
+    border:1px solid var(--border); color:var(--text); padding:9px 13px; border-radius:8px;
+    font-size:12.5px; display:none; box-shadow:0 4px 18px rgba(0,0,0,.4);
+  }
+  .draw-hint.show{display:block;}
+  .map-hint{
+    position:absolute; bottom:14px; left:14px; z-index:601; background:rgba(16,18,22,.85);
+    border:1px solid var(--border); color:var(--muted); padding:7px 11px; border-radius:7px; font-size:11.5px;
+  }
+
+  /* mobile layout: panel becomes a bottom sheet, map fills the rest */
+  @media (max-width: 760px){
+    #app{flex-direction:column;}
+    #map{flex:1; min-height:0;}
+    #panel{
+      width:100%; min-width:0; height:auto; max-height:52vh; border-left:none;
+      border-top:1px solid var(--border);
+      padding-bottom:env(safe-area-inset-bottom, 0px);
+    }
+    header.brand{padding:12px 16px 10px;}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map">
+    <div id="cesiumContainer"></div>
+    <div class="draw-hint" id="drawHint">Glisse sur le globe pour dessiner la zone, relâche pour valider</div>
+    <div class="map-hint">Glisser : déplacer · molette / pincer : zoom · clic droit / deux doigts : orbiter</div>
+  </div>
+
+  <div id="panel">
+    <header class="brand">
+      <h1>Extracteur géométries OSM</h1>
+      <p>Sélectionne une zone → récupère bâtiments (OSM ou IGN), routes, murs, eau, végétation, lampadaires, arbres, mobilier urbain en GeoJSON pour layout 3D. Rendu et dessin de zone sur un globe CesiumJS (open-source, aucune clé API requise — imagerie Esri, pas de 3D Tiles Ion/Google).</p>
+    </header>
+
+    <div class="section">
+      <h2>Localiser</h2>
+      <div class="search-row">
+        <input type="text" id="searchInput" placeholder="Adresse, lieu, ville…">
+        <button id="searchBtn">Aller</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Zone</h2>
+      <button id="drawBtn" class="block primary">Dessiner une zone</button>
+      <div id="zoneInfo">Aucune zone sélectionnée.</div>
+      <div id="areaWarn"></div>
+      <button id="copyZoneLinkBtn" class="ghost block" disabled style="margin-top:8px;font-size:12px;">🔗 Copier le lien de cette zone</button>
+      <div class="layer-row" style="padding-top:10px;">
+        <label>
+          <input type="checkbox" id="chkRelief">
+          <span>Relief du terrain (IGN, France)</span>
+        </label>
+      </div>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkOrtho">
+          <span>Photo aérienne IGN (texture le sol)</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Mesh réel (aucune clé)</h2>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkLyon">
+          <span>Photomaillage Lyon 2023 (5,5 cm/px, Licence Ouverte)</span>
+        </label>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5;">
+        Vrai mesh photogrammétrique texturé de la Métropole de Lyon (2023,
+        Licence Ouverte 2.0 — contrairement aux bâtiments Google, celui-ci
+        est légalement réutilisable). Couvre uniquement le territoire de la
+        Métropole de Lyon — hors de cette zone, la case n'affichera rien.
+        Aperçu seul pour l'instant (pas encore inclus dans l'export .glb/.OBJ
+        — extraire/découper un maillage 3D Tiles est un chantier à part).
+        Bloqué par CORS dans la version navigateur (le serveur de
+        data.grandlyon.com n'envoie pas les en-têtes nécessaires) — débloqué
+        ici puisque c'est ce programme, pas ton navigateur, qui fait la
+        requête.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Cesium Ion (optionnel)</h2>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkIon">
+          <span>Terrain + bâtiments mondiaux</span>
+        </label>
+      </div>
+      <div class="layer-row">
+        <label>
+          <input type="checkbox" id="chkGoogleTiles">
+          <span>Bâtiments photoréalistes Google (aperçu seul, jamais exporté)</span>
+        </label>
+      </div>
+      <div class="search-row" style="margin-top:8px;">
+        <input type="text" id="ionKeyInput" placeholder="Clé API Cesium Ion…" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="ionStatus" style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5;">
+        Désactivé par défaut — l'outil reste 100% sans compte/clé, les deux
+        cases utilisent la même clé Ion. <b>Terrain + bâtiments mondiaux</b> :
+        Cesium World Terrain (relief mondial réel) + Cesium OSM Buildings
+        (extrusions simples, dérivées d'OSM comme notre propre pipeline —
+        peut se superposer à nos bâtiments dans la zone, normal).
+        <b>Bâtiments photoréalistes Google</b> : vrai maillage photogrammétrique
+        (3D Tiles), quota gratuit inclus dans le tier Ion Community — mais
+        affiché uniquement dans ce visualiseur, jamais inclus dans le
+        <code>.glb</code>/<code>.OBJ</code> téléchargé (droits de réutilisation
+        hors-ligne pas clairement couverts par les CGU Google — repère visuel
+        seulement, pas un asset à exporter). Pas de clé ?
+        <a href="#" id="ionHelpLink" style="color:var(--accent);">comment en obtenir une</a>.
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Couches à récupérer</h2>
+      <div id="layerList"></div>
+      <div class="btn-row">
+        <button id="fetchBtn" class="primary block" disabled>Récupérer les données</button>
+      </div>
+      <div id="status"></div>
+    </div>
+
+    <div class="section">
+      <h2>Aperçu 3D & export</h2>
+      <button id="recenterBtn" class="block" disabled>Recentrer la vue sur la zone</button>
+      <div class="btn-row">
+        <button id="exportGlbBtn" class="ghost block" disabled>Télécharger .glb (mesh + texture)</button>
+      </div>
+      <div class="btn-row">
+        <button id="exportObjBtn" class="ghost block" disabled>Télécharger .OBJ (mesh 3D)</button>
+      </div>
+      <div class="btn-row">
+        <button id="exportAbcBtn" class="ghost block" disabled>Script Blender → .abc</button>
+      </div>
+      <div class="btn-row">
+        <button id="exportOrthoBtn" class="ghost block" disabled>Télécharger photo aérienne (.jpg)</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5;">
+        <b>.glb</b> : mesh + matériaux + photo aérienne (si cochée) dans un seul fichier autonome —
+        aucune dépendance à Blender pour la récupération, c'est le format à préférer si ton logiciel
+        le lit (Blender/Unreal/Unity/Maya récents). C'est aussi exactement ce qui s'affiche en direct
+        sur le globe ci-contre (même fichier, deux usages). L'.OBJ contient déjà le mesh 3D (bâtiments
+        extrudés, routes, mobilier) — importable tel quel dans Blender/Maya/Houdini, mais sans
+        matériaux/texture (format historique). Alembic (.abc) est un format binaire qu'aucune librairie
+        JS ne sait écrire de façon fiable dans un navigateur : le script Blender fait l'extrusion
+        et l'export .abc natif en un clic, dans Blender.
+        Avec « Photo aérienne » coché, l'.OBJ contient les UV mais pas l'image (l'exporteur OBJ ne
+        sait pas écrire de .mtl/texture) — télécharge le .jpg séparément et réassigne-le à la main.
+      </div>
+    </div>
+
+    <footer class="note">
+      Sources : OpenStreetMap (Overpass API, licence ODbL) pour toutes les couches ; en France,
+      les bâtiments peuvent aussi venir de la <b>BD TOPO® IGN</b> (Licence Ouverte Etalab) —
+      hauteurs réelles issues de LIDAR (<code>hauteur</code>), plus fiables que les tags OSM
+      souvent absents/estimés. Sélecteur « OSM / IGN » sur la ligne Bâtiments.
+      Bâtiments : toits hip via un vrai squelette droit (<code>straight-skeleton</code>, WASM/CGAL) —
+      correct sur n'importe quelle forme de contour, y compris concave ; repli automatique sur une
+      approximation par champ de hauteur si la librairie échoue sur un contour dégénéré. Gable/
+      skillion/pyramidal via leurs méthodes dédiées. <code>min_height</code>/<code>building:min_level</code>
+      gérés (socles, tours à étages). <code>building:colour</code>/<code>roof:colour</code> appliqués
+      si hex valide. Cours intérieures (relations multipolygon) évidées dans le rendu 3D <b>et</b>
+      dans l'export Blender (modifier Boolean par trou).
+      Relief : case « Relief du terrain » (IGN RGE ALTI, France) — maillage adaptatif
+      (<code>Martini</code>/RTIN, peu de triangles sur le plat, plus où le relief varie) au lieu
+      d'un plan plat, dans le rendu 3D, l'OBJ, le <code>.glb</code> et le script Blender.
+      Photo aérienne : case « Photo aérienne IGN » — texture le sol (pas les façades, une vue
+      aérienne ne les voit jamais) ; embarquée directement dans le <code>.glb</code>, à
+      réassigner à la main avec le <code>.jpg</code> pour l'OBJ/Blender.
+      Zone conseillée : ≤ 1&nbsp;km² par export pour rester raisonnable vis-à-vis des serveurs publics.
+      Globe : CesiumJS (Apache 2.0), sans clé API ni compte — imagerie Esri World Street Map,
+      terrain ellipsoïde (pas de relief satellite tiers, notre propre relief IGN reste la seule
+      source d'élévation). Pas de 3D Tiles Cesium Ion / Google Photorealistic par choix explicite
+      (éviterait la dépendance à une clé API payante/à quota).
+    </footer>
+  </div>
+</div>
+
+<script src="https://unpkg.com/cesium@1.145.0/Build/Cesium/Cesium.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.min.js"></script>
+<script src="https://unpkg.com/straight-skeleton@3.0.0/dist/index.js"></script>
+<script src="https://unpkg.com/@mapbox/martini@0.2.0/martini.js"></script>
+<script type="module">
+  import { Document, WebIO } from 'https://cdn.jsdelivr.net/npm/@gltf-transform/core@4.5.1/+esm';
+  window.__gltfTransform = { Document, WebIO };
+</script>
+<script>
+window.CESIUM_BASE_URL = 'https://unpkg.com/cesium@1.145.0/Build/Cesium/';
+</script>
+<script>
+(function(){
+  "use strict";
+
+  var LAYERS = {
+    buildings:  { label:"Bâtiments",       color:"#4da3ff", filter:function(t){ return !!t.building || !!t['building:part']; } },
+    roads:      { label:"Routes / voies",  color:"#ffd23f", filter:function(t){ return !!t.highway && t.highway!=="street_lamp" && t.highway!=="traffic_signals" && t.highway!=="bus_stop"; } },
+    walls:      { label:"Murs / clôtures", color:"#9aa0ab", filter:function(t){ return !!t.barrier; } },
+    water:      { label:"Eau",             color:"#3fa9dc", filter:function(t){ return t.natural==="water" || !!t.waterway; } },
+    vegetation: { label:"Végétation",      color:"#2f8f4e", filter:function(t){ return ["grass","forest","meadow"].indexOf(t.landuse)!==-1 || t.natural==="wood"; } },
+    lamps:      { label:"Lampadaires",     color:"#ff8a3d", filter:function(t){ return t.highway==="street_lamp"; } },
+    trees:      { label:"Arbres",          color:"#3ddc84", filter:function(t){ return t.natural==="tree"; } },
+    furniture:  { label:"Mobilier urbain", color:"#c792ea", filter:function(t){ return ["bench","waste_basket","drinking_water","bicycle_parking"].indexOf(t.amenity)!==-1 || t.highway==="traffic_signals" || t.highway==="bus_stop"; } }
+  };
+
+  var IGN_WFS = 'https://data.geopf.fr/wfs/ows';
+  var IGN_ELEVATION_API = 'https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json';
+  var terrainGrid = null; // set after a fetch with "Relief du terrain" checked
+  var orthoBounds = null;    // {minLat,maxLat,minLon,maxLon} of the fetched aerial photo, if any
+  var orthoBytes = null;     // raw JPEG bytes (Uint8Array) — used for the .glb embed and the .jpg download
+  var IGN_ORTHO_WMS = 'https://data.geopf.fr/wms-r/wms';
+  var LYON_MESH_BASE = 'https://data.grandlyon.com/files/grandlyon/2023/mesh/';
+
+  // every external data source (Overpass/IGN/Nominatim) goes through the local Python backend
+  // instead of calling the host directly — that backend does the actual HTTP request server-side,
+  // which is the whole point of this desktop build: CORS is a browser-only restriction, a script
+  // making its own request is never subject to it, so this sidesteps every CORS wall the browser
+  // version kept hitting (the Lyon mesh being the clearest example — see LYON_MESH_BASE above).
+  function apiProxy(url){ return '/api/proxy?url=' + encodeURIComponent(url); }
+  function lyonProxy(relPath){ return '/api/lyon/' + relPath; }
+
+  // real CGAL straight-skeleton (WASM) for general hip roofs — init once, in parallel with
+  // everything else; buildHipRoofSkeleton() falls back to the heightfield approximation below
+  // if this isn't ready yet or fails on a given footprint (defensive, never blocks a fetch).
+  var skeletonReady = false;
+  var skeletonInitPromise = (typeof SkeletonBuilder !== 'undefined')
+    ? SkeletonBuilder.init().then(function(){ skeletonReady = true; }).catch(function(e){ console.warn('straight-skeleton init failed', e); })
+    : Promise.resolve();
+
+  // --- Cesium globe: replaces the old Leaflet 2D map + separate Three.js "Vue 3D" panel with a
+  // single view that draws the zone AND shows the fetched geometry in 3D. No Cesium Ion token by
+  // default — Ion-hosted assets (World Terrain, OSM Buildings) are opt-in only (see the "Cesium
+  // Ion" panel section below), the tool stays 100% account/key-free unless the user explicitly
+  // pastes their own Ion key. Only the open-source Cesium *engine* plus our own Esri/OSM/IGN
+  // sources (same ones the old Leaflet map used) are active by default.
+  var viewer = new Cesium.Viewer('cesiumContainer', {
+    baseLayerPicker:false, baseLayer:false, terrainProvider:new Cesium.EllipsoidTerrainProvider(),
+    geocoder:false, homeButton:false, sceneModePicker:false, navigationHelpButton:false,
+    animation:false, timeline:false, fullscreenButton:false, infoBox:false, selectionIndicator:false,
+    shadows:false
+  });
+  viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+    credit: 'Esri — Source: Esri, HERE, Garmin, OpenStreetMap contributors'
+  }));
+  viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0a0b0d');
+  viewer.scene.skyAtmosphere.show = false;
+  viewer.scene.sun.show = false;
+  viewer.scene.moon.show = false;
+  viewer.scene.skyBox.show = false;
+  viewer.scene.backgroundColor = Cesium.Color.fromCssColorString('#0a0b0d');
+  viewer.camera.setView({
+    destination: Cesium.Rectangle.fromDegrees(2.3222, 48.8156, 2.4222, 48.8956) // Paris par défaut
+  });
+
+  var drawHint = document.getElementById('drawHint');
+  var zoneInfoEl = document.getElementById('zoneInfo');
+  var areaWarnEl = document.getElementById('areaWarn');
+  var fetchBtn = document.getElementById('fetchBtn');
+  var drawBtn = document.getElementById('drawBtn');
+  var copyZoneLinkBtn = document.getElementById('copyZoneLinkBtn');
+  var statusEl = document.getElementById('status');
+  var layerListEl = document.getElementById('layerList');
+
+  var drawing = false;
+  var firstPoint = null; // {lat,lng} in degrees
+  var currentBounds = null; // Leaflet-LatLngBounds-compatible: {getSouthWest, getNorthEast, getCenter}
+  var resultLayers = {}; // key -> {fc}
+  var fetchBounds = null; // bounds actually used for the last successful fetch (3D/export reference)
+  var recenterBtn = document.getElementById('recenterBtn');
+  var exportObjBtn = document.getElementById('exportObjBtn');
+  var exportAbcBtn = document.getElementById('exportAbcBtn');
+  var exportOrthoBtn = document.getElementById('exportOrthoBtn');
+  var exportGlbBtn = document.getElementById('exportGlbBtn');
+
+  // --- optional Cesium Ion assets (World Terrain + OSM Buildings) — off by default, the whole
+  // point of keeping the tool key-free unless the user explicitly opts in with their own token.
+  var chkIon = document.getElementById('chkIon');
+  var ionKeyInput = document.getElementById('ionKeyInput');
+  var ionStatusEl = document.getElementById('ionStatus');
+  var ionStatusDefaultHtml = ionStatusEl.innerHTML;
+  var ionHelpLink = document.getElementById('ionHelpLink');
+  var ionOsmBuildingsTileset = null;
+  var ionTerrainActive = false; // true once World Terrain is actually the live terrainProvider
+
+  var savedIonKey = null;
+  try { savedIonKey = localStorage.getItem('cesium_ion_key'); } catch(e){}
+  if (savedIonKey) ionKeyInput.value = savedIonKey;
+
+  ionHelpLink.addEventListener('click', function(e){
+    e.preventDefault();
+    ionStatusEl.innerHTML =
+      '1) Crée un compte gratuit sur <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener" style="color:var(--accent);">ion.cesium.com/signup</a> (email + mot de passe, aucune carte bancaire).<br>' +
+      '2) Une fois connecté : menu <b>Access Tokens</b> (icône clé, en haut à droite) → le token <b>Default Token</b> existe déjà, copie-le (bouton copier).<br>' +
+      '3) Colle-le dans le champ ci-dessus, coche la case, c\'est tout — le tier gratuit (Community) suffit largement pour cet usage occasionnel.<br>' +
+      '<a href="#" id="ionHelpBack" style="color:var(--accent);">← retour</a>';
+    document.getElementById('ionHelpBack').addEventListener('click', function(e2){
+      e2.preventDefault();
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+    });
+  });
+
+  function removeIonAssets(){
+    if (ionOsmBuildingsTileset){ viewer.scene.primitives.remove(ionOsmBuildingsTileset); ionOsmBuildingsTileset = null; }
+    viewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
+    viewer.scene.globe.depthTestAgainstTerrain = false;
+    ionTerrainActive = false;
+  }
+
+  function applyIonAssets(){
+    var key = ionKeyInput.value.trim();
+    if (!key){ chkIon.checked = false; return Promise.resolve(); }
+    try { localStorage.setItem('cesium_ion_key', key); } catch(e){}
+    Cesium.Ion.defaultAccessToken = key;
+    ionStatusEl.textContent = 'Chargement du terrain + bâtiments Cesium Ion…';
+
+    return Promise.all([
+      Cesium.createWorldTerrainAsync(),
+      Cesium.createOsmBuildingsAsync()
+    ]).then(function(results){
+      viewer.terrainProvider = results[0];
+      viewer.scene.globe.depthTestAgainstTerrain = true;
+      ionTerrainActive = true;
+      if (ionOsmBuildingsTileset) viewer.scene.primitives.remove(ionOsmBuildingsTileset);
+      ionOsmBuildingsTileset = viewer.scene.primitives.add(results[1]);
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+      // if a zone is already fetched and shown, rebuild it so it sits on the real terrain height
+      // instead of the ellipsoid (see sampleGroundHeight below) rather than floating/sinking.
+      if (fetchBounds) return showZoneModel();
+    })
+    .catch(function(err){
+      chkIon.checked = false;
+      removeIonAssets();
+      var errMsg = (err && err.message) || (err && err.toString && err.toString()) || 'erreur inconnue';
+      ionStatusEl.innerHTML = '<span style="color:var(--danger);">Échec (clé invalide ou quota dépassé) : ' + errMsg + '</span> — repasse en survol pour revoir comment obtenir une clé.';
+    });
+  }
+
+  chkIon.addEventListener('change', function(){
+    if (chkIon.checked) applyIonAssets();
+    else { removeIonAssets(); if (fetchBounds) showZoneModel(); }
+  });
+
+  // --- Google Photorealistic 3D Tiles — resolved through the SAME Cesium Ion key above (Ion asset
+  // 2275207, confirmed by inspecting the actual network request createGooglePhotorealistic3DTileset()
+  // makes: it calls api.cesium.com/v1/assets/2275207/endpoint with Cesium.Ion.defaultAccessToken —
+  // no separate Google Maps Platform key/billing account needed, the Community Ion tier includes a
+  // free monthly quota). Deliberately kept OUT of the export pipeline: buildZoneMeshes/buildGlbBinary/
+  // buildObjText only ever read from resultLayers (our own fetched OSM/IGN data) — this tileset lives
+  // solely in viewer.scene.primitives, a preview-only reference layer, never touched by any export
+  // function. Google's Tile API Policies don't clearly cover offline caching/export of these tiles
+  // (checked earlier), so baking them into a downloadable .glb/.OBJ would be a real ToS grey area —
+  // this stays strictly "look, don't take".
+  var chkGoogleTiles = document.getElementById('chkGoogleTiles');
+  var googleTilesetPrimitive = null;
+
+  function removeGoogleTileset(){
+    if (googleTilesetPrimitive){ viewer.scene.primitives.remove(googleTilesetPrimitive); googleTilesetPrimitive = null; }
+  }
+
+  function applyGoogleTileset(){
+    var key = ionKeyInput.value.trim();
+    if (!key){ chkGoogleTiles.checked = false; return Promise.resolve(); }
+    try { localStorage.setItem('cesium_ion_key', key); } catch(e){}
+    Cesium.Ion.defaultAccessToken = key;
+    ionStatusEl.textContent = 'Chargement des bâtiments photoréalistes Google…';
+
+    return Cesium.createGooglePhotorealistic3DTileset().then(function(tileset){
+      removeGoogleTileset();
+      googleTilesetPrimitive = viewer.scene.primitives.add(tileset);
+      ionStatusEl.innerHTML = ionStatusDefaultHtml;
+    })
+    .catch(function(err){
+      chkGoogleTiles.checked = false;
+      removeGoogleTileset();
+      var errMsg = (err && err.message) || (err && err.toString && err.toString()) || 'erreur inconnue';
+      ionStatusEl.innerHTML = '<span style="color:var(--danger);">Échec bâtiments Google (clé invalide ou quota dépassé) : ' + errMsg + '</span> — repasse en survol pour revoir comment obtenir une clé.';
+    });
+  }
+
+  chkGoogleTiles.addEventListener('change', function(){
+    if (chkGoogleTiles.checked) applyGoogleTileset();
+    else removeGoogleTileset();
+  });
+
+  // --- Lyon 2023 photomesh — no Cesium Ion key at all, loaded straight from Grand Lyon's own
+  // server via the local proxy (path-based: /api/lyon/<relative path>, so Cesium's own relative
+  // URL resolution for child tiles inside the pyramid keeps working transparently — a query-param
+  // proxy like apiProxy() would break that, since Cesium resolves "pyramid/tileset.json" relative
+  // to whatever URL it fetched the parent from).
+  var chkLyon = document.getElementById('chkLyon');
+  var lyonTilesetPrimitive = null;
+
+  function removeLyonTileset(){
+    if (lyonTilesetPrimitive){ viewer.scene.primitives.remove(lyonTilesetPrimitive); lyonTilesetPrimitive = null; }
+  }
+
+  chkLyon.addEventListener('change', function(){
+    if (!chkLyon.checked){ removeLyonTileset(); return; }
+    setStatus('Chargement du photomaillage Lyon…', false);
+    Cesium.Cesium3DTileset.fromUrl(lyonProxy('tileset.json'))
+      .then(function(tileset){
+        removeLyonTileset();
+        lyonTilesetPrimitive = viewer.scene.primitives.add(tileset);
+        setStatus('', false);
+      })
+      .catch(function(err){
+        chkLyon.checked = false;
+        setStatus('Échec chargement Lyon (hors de la zone couverte, ou serveur indisponible) : ' + (err.message || err), true);
+      });
+  });
+
+  // returns a Promise<number> (meters, ellipsoid height) — real sampled terrain height when Ion
+  // World Terrain is active, 0 otherwise (our own zone geometry is already terrain-draped via IGN
+  // relief when that's checked; this is only about where the WHOLE model sits on Cesium's global
+  // terrain, a separate, coarser surface).
+  function sampleGroundHeight(lat, lng){
+    if (!ionTerrainActive) return Promise.resolve(0);
+    var carto = Cesium.Cartographic.fromDegrees(lng, lat);
+    return Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, [carto])
+      .then(function(sampled){ return sampled[0].height || 0; })
+      .catch(function(){ return 0; });
+  }
+
+  // drop-in replacement for L.latLngBounds(...) — every fetch/WFS/WMS/elevation function below
+  // reads bounds exclusively through these three methods, so nothing downstream of zone selection
+  // needs to know or care that Leaflet is gone.
+  function makeBounds(latA, lngA, latB, lngB){
+    var south = Math.min(latA, latB), north = Math.max(latA, latB);
+    var west = Math.min(lngA, lngB), east = Math.max(lngA, lngB);
+    return {
+      getSouthWest: function(){ return { lat: south, lng: west }; },
+      getNorthEast: function(){ return { lat: north, lng: east }; },
+      getCenter: function(){ return { lat: (south+north)/2, lng: (west+east)/2 }; }
+    };
+  }
+
+  var zoneEntity = null;
+  function setZoneEntity(bounds){
+    if (zoneEntity) viewer.entities.remove(zoneEntity);
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    zoneEntity = viewer.entities.add({
+      rectangle: {
+        coordinates: Cesium.Rectangle.fromDegrees(sw.lng, sw.lat, ne.lng, ne.lat),
+        material: Cesium.Color.fromCssColorString('#ff8a3d').withAlpha(0.12),
+        outline: true,
+        outlineColor: Cesium.Color.fromCssColorString('#ff8a3d'),
+        outlineWidth: 2,
+        height: 0
+      }
+    });
+  }
+
+  // --- shareable zone link: encodes the drawn bbox in the URL hash (#bbox=west,south,east,north)
+  // so a teammate opening the link lands on the exact same zone, already drawn — copied on demand
+  // (not auto-synced on every draw, to avoid rewriting the address bar/history behind the user).
+  copyZoneLinkBtn.addEventListener('click', function(){
+    if (!currentBounds) return;
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var url = new URL(location.href);
+    url.hash = 'bbox=' + [sw.lng, sw.lat, ne.lng, ne.lat].join(',');
+    var text = url.toString();
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+      .then(function(){ setStatus('Lien de la zone copié.', false); })
+      .catch(function(){
+        window.prompt('Copie ce lien :', text);
+      });
+  });
+
+  function restoreZoneFromHash(){
+    if (location.hash.indexOf('bbox=') !== 0 && location.hash.indexOf('#bbox=') !== 0) return;
+    var raw = location.hash.replace(/^#?bbox=/, '');
+    var v = raw.split(',').map(Number);
+    if (v.length !== 4 || v.some(function(n){ return isNaN(n); })) return;
+    var west = v[0], south = v[1], east = v[2], north = v[3];
+    currentBounds = makeBounds(south, west, north, east);
+    setZoneEntity(currentBounds);
+    updateZoneInfo();
+    viewer.camera.setView({ destination: Cesium.Rectangle.fromDegrees(west, south, east, north) });
+  }
+
+  // --- build layer checkbox list ---
+  Object.keys(LAYERS).forEach(function(key){
+    var def = LAYERS[key];
+    var row = document.createElement('div');
+    row.className = 'layer-row';
+    var sourceHtml = (key === 'buildings')
+      ? '<select id="buildingSource" class="src-select" title="Source des bâtiments">' +
+          '<option value="osm" selected>OSM</option>' +
+          '<option value="ign">IGN (France)</option>' +
+        '</select>'
+      : '';
+    row.innerHTML =
+      '<label>' +
+        '<input type="checkbox" id="chk_'+key+'" checked>' +
+        '<span class="swatch" style="background:'+def.color+'"></span>' +
+        '<span>'+def.label+'</span>' +
+      '</label>' +
+      sourceHtml +
+      '<span class="layer-count" id="count_'+key+'">–</span>' +
+      '<button class="layer-dl" id="dl_'+key+'" style="display:none">↓</button>';
+    layerListEl.appendChild(row);
+    document.getElementById('dl_'+key).addEventListener('click', function(){ downloadLayer(key); });
+  });
+
+  function selectedLayerKeys(){
+    return Object.keys(LAYERS).filter(function(k){
+      return document.getElementById('chk_'+k).checked;
+    });
+  }
+
+  // --- area / bbox helpers ---
+  function bboxAreaKm2(bounds){
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var R = 6371;
+    var dLat = (ne.lat - sw.lat) * Math.PI/180;
+    var latAvg = (ne.lat + sw.lat)/2 * Math.PI/180;
+    var dLon = (ne.lng - sw.lng) * Math.PI/180;
+    var h = R * dLat;
+    var w = R * dLon * Math.cos(latAvg);
+    return Math.abs(w*h);
+  }
+
+  function updateZoneInfo(){
+    if (!currentBounds){
+      zoneInfoEl.textContent = 'Aucune zone sélectionnée.';
+      zoneInfoEl.classList.remove('has-zone');
+      areaWarnEl.className = '';
+      fetchBtn.disabled = true;
+      copyZoneLinkBtn.disabled = true;
+      return;
+    }
+    copyZoneLinkBtn.disabled = false;
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var area = bboxAreaKm2(currentBounds);
+    zoneInfoEl.classList.add('has-zone');
+    zoneInfoEl.innerHTML =
+      'SO ' + sw.lat.toFixed(5) + ', ' + sw.lng.toFixed(5) + '<br>' +
+      'NE ' + ne.lat.toFixed(5) + ', ' + ne.lng.toFixed(5) + '<br>' +
+      '≈ ' + area.toFixed(3) + ' km²';
+
+    if (area > 5){
+      areaWarnEl.className = 'danger';
+      areaWarnEl.textContent = 'Zone trop grande (>5 km²) — le serveur Overpass public risque de refuser ou d\'être très lent. Réduis la zone.';
+      fetchBtn.disabled = true;
+    } else if (area > 1){
+      areaWarnEl.className = 'warn';
+      areaWarnEl.textContent = 'Zone assez grande (>1 km²) — la requête peut prendre du temps.';
+      fetchBtn.disabled = false;
+    } else {
+      areaWarnEl.className = '';
+      fetchBtn.disabled = false;
+    }
+  }
+
+  // --- draw a zone: press-drag-release a rectangle on the globe, with a live preview while
+  // dragging (touch drag works the same way — Cesium maps single-touch to the same LEFT_DOWN/
+  // MOUSE_MOVE/LEFT_UP event types). Camera panning/rotation is explicitly suspended for the
+  // duration of the drag (screenSpaceCameraController.enableInputs = false) — without this the
+  // globe's own default drag-to-pan fires on the same gesture and the camera moves underneath the
+  // rectangle while it's being drawn, fighting the selection instead of just drawing it.
+  function pickCartographicDegrees(screenPosition){
+    var cartesian = viewer.camera.pickEllipsoid(screenPosition, viewer.scene.globe.ellipsoid);
+    if (!cartesian) return null;
+    var carto = Cesium.Cartographic.fromCartesian(cartesian);
+    return { lat: Cesium.Math.toDegrees(carto.latitude), lng: Cesium.Math.toDegrees(carto.longitude) };
+  }
+
+  drawBtn.addEventListener('click', function(){
+    drawing = true;
+    firstPoint = null;
+    drawHint.classList.add('show');
+    viewer.canvas.style.cursor = 'crosshair';
+  });
+
+  var clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+
+  clickHandler.setInputAction(function(down){
+    if (!drawing) return;
+    var p = pickCartographicDegrees(down.position);
+    if (!p) return;
+    firstPoint = p;
+    viewer.scene.screenSpaceCameraController.enableInputs = false;
+    setZoneEntity(makeBounds(p.lat, p.lng, p.lat, p.lng));
+  }, Cesium.ScreenSpaceEventType.LEFT_DOWN);
+
+  clickHandler.setInputAction(function(move){
+    if (!drawing || !firstPoint) return;
+    var p = pickCartographicDegrees(move.endPosition);
+    if (!p) return;
+    setZoneEntity(makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng));
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+  clickHandler.setInputAction(function(up){
+    if (!drawing || !firstPoint) return;
+    var p = pickCartographicDegrees(up.position);
+    if (p){
+      currentBounds = makeBounds(firstPoint.lat, firstPoint.lng, p.lat, p.lng);
+      setZoneEntity(currentBounds);
+      updateZoneInfo();
+    }
+    drawing = false;
+    firstPoint = null;
+    drawHint.classList.remove('show');
+    viewer.canvas.style.cursor = '';
+    viewer.scene.screenSpaceCameraController.enableInputs = true;
+  }, Cesium.ScreenSpaceEventType.LEFT_UP);
+
+  // --- search / geocode (Nominatim) ---
+  document.getElementById('searchBtn').addEventListener('click', doSearch);
+  document.getElementById('searchInput').addEventListener('keydown', function(e){
+    if (e.key === 'Enter') doSearch();
+  });
+  function doSearch(){
+    var q = document.getElementById('searchInput').value.trim();
+    if (!q) return;
+    setStatus('Recherche de "'+q+'"…', false);
+    fetch(apiProxy('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)))
+      .then(function(r){ return r.json(); })
+      .then(function(results){
+        if (!results.length){ setStatus('Lieu introuvable.', true); return; }
+        var r = results[0];
+        var lat = parseFloat(r.lat), lon = parseFloat(r.lon);
+        viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 900) });
+        setStatus('', false);
+      })
+      .catch(function(err){ setStatus('Erreur de recherche : ' + err.message, true); });
+  }
+
+  // --- IGN BD TOPO (France) : hauteurs reelles (LIDAR), en alternative a OSM pour les batiments ---
+  function fetchIGNBuildings(bounds){
+    var bboxStr = bounds.getSouthWest().lat + ',' + bounds.getSouthWest().lng + ',' +
+                  bounds.getNorthEast().lat + ',' + bounds.getNorthEast().lng;
+    var url = IGN_WFS + '?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAME=BDTOPO_V3:batiment' +
+      '&BBOX=' + encodeURIComponent(bboxStr) + '&OUTPUTFORMAT=application/json&COUNT=2000';
+    return fetch(apiProxy(url)).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (IGN WFS)');
+      return r.json();
+    }).then(function(data){
+      var features = [];
+      (data.features || []).forEach(function(f){
+        var hVal = f.properties && f.properties.hauteur;
+        var h = (typeof hVal === 'number' && hVal > 0.3) ? hVal : 9;
+        var g = f.geometry;
+        if (!g) return;
+        var polys = (g.type === 'MultiPolygon') ? g.coordinates : [g.coordinates];
+        polys.forEach(function(poly, idx){
+          if (!poly.length) return;
+          var rings = poly.map(function(ring){ return ring.map(function(c){ return [c[0], c[1]]; }); }); // drop z (sentinel, unreliable)
+          features.push({
+            type:'Feature',
+            geometry:{ type:'Polygon', coordinates: rings },
+            properties:{
+              source:'ign_bdtopo',
+              ign_id: (f.properties && f.properties.cleabs) + (idx ? '_' + idx : ''),
+              nature: f.properties && f.properties.nature,
+              usage: f.properties && f.properties.usage_1,
+              nombre_d_etages: f.properties && f.properties.nombre_d_etages,
+              height_est_m: h,
+              roof_shape:'flat', roof_height_m:0, wall_height_m:h
+            }
+          });
+        });
+      });
+      return { type:'FeatureCollection', features: features };
+    });
+  }
+
+  // --- IGN elevation (RGE ALTI, France) : regular lat/lon grid sampled in one batched request,
+  // used to drape the ground and offset every feature's placement by local terrain height.
+  function fetchIGNElevationGrid(bounds){
+    // 17 = 2^4+1: required shape for Martini's RTIN mesh simplification (buildTerrainGroundGeometry
+    // below). Verified the resulting IGN request URL (289 points, one batched call) stays well
+    // under URL length limits — 33x33 was tested and does fail there, 17x17 is the safe ceiling.
+    var gridN = 17;
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var lats = [], lons = [];
+    for (var i=0;i<gridN;i++){
+      var lat = sw.lat + (ne.lat-sw.lat)*i/(gridN-1);
+      for (var j=0;j<gridN;j++){
+        var lon = sw.lng + (ne.lng-sw.lng)*j/(gridN-1);
+        lats.push(lat.toFixed(6));
+        lons.push(lon.toFixed(6));
+      }
+    }
+    var url = IGN_ELEVATION_API + '?lon=' + lons.join('|') + '&lat=' + lats.join('|') +
+      '&resource=ign_rge_alti_wld&indent=false';
+    return fetch(apiProxy(url)).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (IGN élévation)');
+      return r.json();
+    }).then(function(data){
+      var els = (data.elevations || []).map(function(e){ return e.z; });
+      if (els.length !== gridN*gridN) throw new Error('réponse IGN élévation incomplète');
+      var minE = Math.min.apply(null, els);
+      var grid = [];
+      for (var i=0;i<gridN;i++) grid.push(els.slice(i*gridN, i*gridN+gridN));
+      return {
+        gridN: gridN,
+        minLat: sw.lat, maxLat: ne.lat, minLon: sw.lng, maxLon: ne.lng,
+        elevations: grid, // elevations[i][j] : i = lat index (south→north), j = lon index (west→east)
+        refElevation: minE // the zone's lowest sampled point becomes local y=0
+      };
+    });
+  }
+
+  // IGN BD ORTHO aerial photo (~20cm/px), one GetMap call covering the exact zone bbox — used to
+  // texture the ground (and, via the .glb export, travels with the mesh instead of a separate
+  // file the user has to reassign by hand like with .OBJ). Roof texturing is NOT covered — a
+  // straight-down aerial photo never sees building walls, only rooftops/ground, and even
+  // texturing rooftops would need each roof mesh split into its own material group; out of scope
+  // for this pass, documented rather than half-implemented.
+  function fetchIGNOrthophoto(bounds){
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var latSpan = ne.lat - sw.lat, lonSpan = ne.lng - sw.lng;
+    var aspect = (lonSpan * Math.cos(((sw.lat+ne.lat)/2) * Math.PI/180)) / latSpan;
+    var W = 1024, H = 1024;
+    if (aspect > 1) H = Math.max(64, Math.round(1024/aspect)); else W = Math.max(64, Math.round(1024*aspect));
+    var url = IGN_ORTHO_WMS + '?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=HR.ORTHOIMAGERY.ORTHOPHOTOS&STYLES=' +
+      '&CRS=EPSG:4326&BBOX=' + sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng +
+      '&WIDTH=' + W + '&HEIGHT=' + H + '&FORMAT=image/jpeg';
+    return fetch(apiProxy(url)).then(function(r){
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' (photo aérienne IGN)');
+      return r.arrayBuffer();
+    }).then(function(buf){
+      return { bytes: new Uint8Array(buf), minLat: sw.lat, maxLat: ne.lat, minLon: sw.lng, maxLon: ne.lng };
+    });
+  }
+
+  // UV mapping shared by the ground mesh descriptor — glTF's own convention (V=0 at the TOP/north
+  // edge of the image, increasing southward) is used directly since positions are already final
+  // world-local (X,Y,Z) at this point, no engine-specific texture flipY concern anymore.
+  function applyGeoUV(positions, bounds, center){
+    var mPerDegLat = 111320;
+    var mPerDegLon = 111320 * Math.cos(center.lat * Math.PI/180);
+    var n = positions.length/3;
+    var uvs = new Float32Array(n*2);
+    for (var i=0;i<n;i++){
+      var x = positions[i*3], z = positions[i*3+2];
+      var lon = center.lng + x/mPerDegLon;
+      var lat = center.lat - z/mPerDegLat;
+      uvs[i*2]   = (lon - bounds.minLon) / (bounds.maxLon - bounds.minLon);
+      uvs[i*2+1] = (bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat);
+    }
+    return uvs;
+  }
+
+  // flat ground quad, vertices directly in local (x, y, z) space.
+  function buildFlatGroundGeometry(extentX, extentZ){
+    var hx = extentX/2, hz = extentZ/2, y = -0.05;
+    var positions = new Float32Array([
+      -hx,y,-hz,  hx,y,-hz,  hx,y,hz,
+      -hx,y,-hz,  hx,y,hz,  -hx,y,hz
+    ]);
+    return { positions: positions, indices: null };
+  }
+
+  // builds a (x,z)->y sampler in local meters from a fetched elevation grid, for the given
+  // projection center. Robust to axis direction (our project() flips sign on lat->z) by driving
+  // interpolation off the actual projected coordinate values rather than assumed index order.
+  function buildTerrainSampler(terrain, center){
+    if (!terrain) return null;
+    var n = terrain.gridN;
+    var xs = [], zs = [];
+    for (var j=0;j<n;j++){
+      var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*j/(n-1);
+      xs.push(project(terrain.minLat, lon, center).x);
+    }
+    for (var i=0;i<n;i++){
+      var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*i/(n-1);
+      zs.push(project(lat, terrain.minLon, center).z);
+    }
+    var elev = terrain.elevations.map(function(row){
+      return row.map(function(e){ return e - terrain.refElevation; });
+    });
+
+    function findBracket(arr, v){
+      var hi = arr.length-1;
+      var ascending = arr[hi] >= arr[0];
+      if (ascending){
+        if (v<=arr[0]) return {i0:0,i1:0,f:0};
+        if (v>=arr[hi]) return {i0:hi,i1:hi,f:0};
+        for (var k=0;k<hi;k++){
+          if (v>=arr[k] && v<=arr[k+1]) return {i0:k,i1:k+1,f:(v-arr[k])/((arr[k+1]-arr[k])||1)};
+        }
+      } else {
+        if (v>=arr[0]) return {i0:0,i1:0,f:0};
+        if (v<=arr[hi]) return {i0:hi,i1:hi,f:0};
+        for (var k2=0;k2<hi;k2++){
+          if (v<=arr[k2] && v>=arr[k2+1]) return {i0:k2,i1:k2+1,f:(arr[k2]-v)/((arr[k2]-arr[k2+1])||1)};
+        }
+      }
+      return {i0:0,i1:0,f:0};
+    }
+
+    return function(x, z){
+      var jr = findBracket(xs, x), ir = findBracket(zs, z);
+      var e00=elev[ir.i0][jr.i0], e01=elev[ir.i0][jr.i1];
+      var e10=elev[ir.i1][jr.i0], e11=elev[ir.i1][jr.i1];
+      var e0 = e00*(1-jr.f) + e01*jr.f;
+      var e1 = e10*(1-jr.f) + e11*jr.f;
+      return e0*(1-ir.f) + e1*ir.f;
+    };
+  }
+
+  // naive full grid (2 triangles per cell, every cell emitted) — fallback if Martini isn't loaded
+  function buildTerrainGroundGeometryGrid(terrain, center){
+    var n = terrain.gridN;
+    var pts = [];
+    for (var i=0;i<n;i++){
+      pts[i] = [];
+      for (var j=0;j<n;j++){
+        var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*i/(n-1);
+        var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*j/(n-1);
+        var p = project(lat, lon, center);
+        pts[i][j] = { x:p.x, y:(terrain.elevations[i][j]-terrain.refElevation)-0.05, z:p.z };
+      }
+    }
+    var positions = [];
+    for (var i2=0;i2<n-1;i2++){
+      for (var j2=0;j2<n-1;j2++){
+        var a=pts[i2][j2], b=pts[i2][j2+1], c=pts[i2+1][j2], d=pts[i2+1][j2+1];
+        positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+        positions.push(b.x,b.y,b.z, d.x,d.y,d.z, c.x,c.y,c.z);
+      }
+    }
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  // adaptive terrain mesh (RTIN via Martini) — fewer triangles on flat ground, more where the
+  // relief actually varies, instead of a uniform grid with every cell emitted regardless of need.
+  function buildTerrainGroundGeometry(terrain, center){
+    if (typeof Martini === 'undefined') return buildTerrainGroundGeometryGrid(terrain, center);
+    var size = terrain.gridN;
+    var flat = new Float32Array(size*size);
+    for (var i=0;i<size;i++){
+      for (var j=0;j<size;j++){ flat[i*size+j] = terrain.elevations[i][j]; }
+    }
+
+    var martini, tile, mesh;
+    try {
+      martini = new Martini(size);
+      tile = martini.createTile(flat);
+      mesh = tile.getMesh(0.2); // maxError in meters — small since the source grid is already coarse
+    } catch(e){ return buildTerrainGroundGeometryGrid(terrain, center); }
+    if (!mesh || !mesh.vertices.length) return buildTerrainGroundGeometryGrid(terrain, center);
+
+    var worldPts = [];
+    for (var v=0; v<mesh.vertices.length; v+=2){
+      var gx = mesh.vertices[v], gy = mesh.vertices[v+1];
+      var lat = terrain.minLat + (terrain.maxLat-terrain.minLat)*gy/(size-1);
+      var lon = terrain.minLon + (terrain.maxLon-terrain.minLon)*gx/(size-1);
+      var p = project(lat, lon, center);
+      worldPts.push({ x:p.x, y:(terrain.elevations[gy][gx]-terrain.refElevation)-0.05, z:p.z });
+    }
+    var positions = [];
+    for (var t=0; t<mesh.triangles.length; t+=3){
+      var a=worldPts[mesh.triangles[t]], b=worldPts[mesh.triangles[t+1]], c=worldPts[mesh.triangles[t+2]];
+      positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+    }
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  // representative lon/lat point of a raw (unprojected) GeoJSON geometry, used to look up its
+  // local terrain offset without needing a full centroid computation.
+  function representativeLonLat(geom){
+    if (geom.type === 'Point') return { lon:geom.coordinates[0], lat:geom.coordinates[1] };
+    if (geom.type === 'LineString'){
+      var c = geom.coordinates[Math.floor(geom.coordinates.length/2)];
+      return { lon:c[0], lat:c[1] };
+    }
+    if (geom.type === 'Polygon'){
+      var ring = geom.coordinates[0], slon=0, slat=0;
+      ring.forEach(function(c){ slon+=c[0]; slat+=c[1]; });
+      return { lon: slon/ring.length, lat: slat/ring.length };
+    }
+    return null;
+  }
+
+  function setStatus(html, isError){
+    statusEl.classList.remove('error','ok');
+    statusEl.innerHTML = html;
+    if (isError) statusEl.classList.add('error');
+  }
+
+  // --- local ENU-ish projection (meters), centered on the fetched zone ---
+  function project(lat, lon, center){
+    var DEG2RAD = Math.PI/180;
+    var metersPerDegLat = 111320;
+    var metersPerDegLon = 111320 * Math.cos(center.lat * DEG2RAD);
+    return {
+      x: (lon - center.lng) * metersPerDegLon,
+      z: -(lat - center.lat) * metersPerDegLat
+    };
+  }
+
+  function polygonRingToPoints(ring, center){
+    var pts = ring.map(function(c){ var p = project(c[1], c[0], center); return { x:p.x, y:p.z }; });
+    if (pts.length > 1 && pts[0].x === pts[pts.length-1].x && pts[0].y === pts[pts.length-1].y) pts.pop();
+    return pts.length >= 3 ? pts : null;
+  }
+
+  function ringsToPointLists(coordinates, center){
+    var outerPts = polygonRingToPoints(coordinates[0], center);
+    if (!outerPts) return null;
+    var holePtsList = [];
+    coordinates.slice(1).forEach(function(ring){
+      var holePts = polygonRingToPoints(ring, center);
+      if (holePts) holePtsList.push(holePts);
+    });
+    return { outerPts: outerPts, holePtsList: holePtsList };
+  }
+
+  // ===== mesh-descriptor geometry primitives (plain {positions:Float32Array, indices:Uint32Array|null})
+  // no rendering engine dependency at all — one pipeline feeds both the live Cesium.Model preview
+  // and the .glb/.OBJ export (buildGlbBinary / buildObjText below). Ring winding is normalized
+  // internally so real-world OSM/IGN data (inconsistent CW/CCW) never needs pre-sorting by callers.
+
+  function ringSignedArea(ring){
+    var a = 0;
+    for (var i=0;i<ring.length;i++){
+      var p = ring[i], q = ring[(i+1)%ring.length];
+      a += p.x*q.y - q.x*p.y;
+    }
+    return a/2;
+  }
+  function ensureOrientation(ring, wantCCW){
+    var isCCW = ringSignedArea(ring) > 0;
+    return (isCCW === wantCCW) ? ring : ring.slice().reverse();
+  }
+
+  // solid extruded polygon (building walls) with optional holes (courtyards) — replaces
+  // THREE.ExtrudeGeometry(shape,{depth})+rotateX(-Math.PI/2), which used to fold the shape's XY
+  // plane into world XZ and, in the process, mirrored every wall on the Z axis relative to its own
+  // roof (fixed separately, then made moot entirely here: there is no rotation step anymore, walls
+  // are authored directly in final world-local (x,y,z), so this whole bug class can't recur).
+  // Verified via Node self-tests: correct bbox, winding-independent (CW or CCW input ring gives the
+  // identical result), correct outward-facing normals on outer walls + both caps + hole walls.
+  function buildExtrudedPolygon(outerPtsIn, holePtsListIn, baseY, topY){
+    var outerPts = ensureOrientation(outerPtsIn, true);
+    var holePtsList = (holePtsListIn||[]).map(function(h){ return ensureOrientation(h, false); });
+
+    var flat = [];
+    var holeIndices = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    holePtsList.forEach(function(hole){
+      holeIndices.push(flat.length/2);
+      hole.forEach(function(p){ flat.push(p.x, p.y); });
+    });
+    var capTris = earcut(flat, holeIndices.length ? holeIndices : null);
+    if (!capTris.length) return null;
+
+    var positions = [];
+    var indices = [];
+    function addVert(x,y,z){ positions.push(x,y,z); return positions.length/3 - 1; }
+
+    var nPts = flat.length/2;
+    var topBase = positions.length/3;
+    for (var i=0;i<nPts;i++) addVert(flat[i*2], topY, flat[i*2+1]);
+    for (var t=0;t<capTris.length;t+=3){
+      indices.push(topBase+capTris[t], topBase+capTris[t+2], topBase+capTris[t+1]);
+    }
+    var botBase = positions.length/3;
+    for (var i2=0;i2<nPts;i2++) addVert(flat[i2*2], baseY, flat[i2*2+1]);
+    for (var t2=0;t2<capTris.length;t2+=3){
+      indices.push(botBase+capTris[t2], botBase+capTris[t2+1], botBase+capTris[t2+2]);
+    }
+
+    function addWallRing(ring){
+      var n = ring.length;
+      for (var i=0;i<n;i++){
+        var a = ring[i], b = ring[(i+1)%n];
+        var a0 = addVert(a.x, baseY, a.y);
+        var b0 = addVert(b.x, baseY, b.y);
+        var b1 = addVert(b.x, topY, b.y);
+        var a1 = addVert(a.x, topY, a.y);
+        indices.push(a0,b1,b0, a0,a1,b1);
+      }
+    }
+    addWallRing(outerPts);
+    holePtsList.forEach(addWallRing);
+
+    return { positions: new Float32Array(positions), indices: new Uint32Array(indices) };
+  }
+
+  // flat capped area (water/vegetation), optional holes — same cap logic as buildExtrudedPolygon
+  // without the walls/bottom, single Y level.
+  function buildFlatCapPolygon(outerPtsIn, holePtsListIn, y){
+    var outerPts = ensureOrientation(outerPtsIn, true);
+    var holePtsList = (holePtsListIn||[]).map(function(h){ return ensureOrientation(h, false); });
+    var flat = [];
+    var holeIndices = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    holePtsList.forEach(function(hole){
+      holeIndices.push(flat.length/2);
+      hole.forEach(function(p){ flat.push(p.x, p.y); });
+    });
+    var tris = earcut(flat, holeIndices.length ? holeIndices : null);
+    if (!tris.length) return null;
+    var nPts = flat.length/2;
+    var positions = new Float32Array(nPts*3);
+    for (var i=0;i<nPts;i++){ positions[i*3]=flat[i*2]; positions[i*3+1]=y; positions[i*3+2]=flat[i*2+1]; }
+    var indices = new Uint32Array(tris.length);
+    for (var t=0;t<tris.length;t+=3){ indices[t]=tris[t]; indices[t+1]=tris[t+2]; indices[t+2]=tris[t+1]; }
+    return { positions: positions, indices: indices };
+  }
+
+  // oriented box, centered at (cx,cy,cz), size (w,h,d) before a rotation of rotY radians around Y
+  // through the center — used for road/wall/furniture box segments. Verified via Node self-test:
+  // correct bbox under rotation, correct outward top/bottom normals.
+  function buildBoxAt(cx, cy, cz, w, h, d, rotY){
+    var hw=w/2, hh=h/2, hd=d/2;
+    var cos = Math.cos(rotY||0), sin = Math.sin(rotY||0);
+    function tp(lx, lz){ return { x: cx + lx*cos - lz*sin, z: cz + lx*sin + lz*cos }; }
+    var a=tp(-hw,-hd), b=tp(hw,-hd), c=tp(hw,hd), d2=tp(-hw,hd);
+    var y0=cy-hh, y1=cy+hh;
+    var positions=[], indices=[];
+    function v(p,y){ positions.push(p.x,y,p.z); return positions.length/3-1; }
+    function quad(p0,y0_,p1,y1_,p2,y2_,p3,y3_){
+      var i0=v(p0,y0_), i1=v(p1,y1_), i2=v(p2,y2_), i3=v(p3,y3_);
+      indices.push(i0,i1,i2, i0,i2,i3);
+    }
+    quad(d2,y1, c,y1, b,y1, a,y1); // top
+    quad(a,y0, b,y0, c,y0, d2,y0); // bottom
+    quad(a,y0, b,y0, b,y1, a,y1); // side a-b
+    quad(b,y0, c,y0, c,y1, b,y1); // side b-c
+    quad(c,y0, d2,y0, d2,y1, c,y1); // side c-d
+    quad(d2,y0, a,y0, a,y1, d2,y1); // side d-a
+    return { positions:new Float32Array(positions), indices:new Uint32Array(indices) };
+  }
+
+  // cylinder (radiusTop=radiusBot -> straight cylinder; radiusTop=0 -> cone), base at (cx,cy,cz),
+  // extends +height along Y. Verified via Node self-test: correct bbox, outward side-wall normals,
+  // correct top/bottom cap normals.
+  function buildCylinderAt(cx, cy, cz, radiusTop, radiusBot, height, segments){
+    segments = segments || 10;
+    var positions=[], indices=[];
+    function v(x,y,z){ positions.push(x,y,z); return positions.length/3-1; }
+    var y0=cy, y1=cy+height;
+    var topRing=[], botRing=[];
+    for (var i=0;i<segments;i++){
+      var a = i/segments*Math.PI*2;
+      var ca=Math.cos(a), sa=Math.sin(a);
+      topRing.push(v(cx+ca*radiusTop, y1, cz+sa*radiusTop));
+      botRing.push(v(cx+ca*radiusBot, y0, cz+sa*radiusBot));
+    }
+    for (var i2=0;i2<segments;i2++){
+      var j=(i2+1)%segments;
+      indices.push(botRing[i2],topRing[j],botRing[j], botRing[i2],topRing[i2],topRing[j]);
+    }
+    if (radiusTop>0){
+      var ct = v(cx,y1,cz);
+      for (var i3=0;i3<segments;i3++){ var j3=(i3+1)%segments; indices.push(ct, topRing[j3], topRing[i3]); }
+    }
+    if (radiusBot>0){
+      var cb = v(cx,y0,cz);
+      for (var i4=0;i4<segments;i4++){ var j4=(i4+1)%segments; indices.push(cb, botRing[i4], botRing[j4]); }
+    }
+    return {positions:new Float32Array(positions), indices:new Uint32Array(indices)};
+  }
+
+  // simple UV sphere centered at (cx,cy,cz) — lamp bulbs only, decorative/low-detail.
+  function buildSphereAt(cx, cy, cz, radius, segs){
+    segs = segs || 8;
+    var positions=[], indices=[];
+    var rings = segs, sectors = segs;
+    for (var r=0; r<=rings; r++){
+      var phi = Math.PI * r/rings; // 0..PI (top to bottom)
+      var y = cy + radius*Math.cos(phi);
+      var rr = radius*Math.sin(phi);
+      for (var s=0; s<=sectors; s++){
+        var theta = 2*Math.PI * s/sectors;
+        positions.push(cx+rr*Math.cos(theta), y, cz+rr*Math.sin(theta));
+      }
+    }
+    for (var r2=0; r2<rings; r2++){
+      for (var s2=0; s2<sectors; s2++){
+        var a=r2*(sectors+1)+s2, b=a+sectors+1;
+        indices.push(a,b,a+1, b,b+1,a+1);
+      }
+    }
+    return {positions:new Float32Array(positions), indices:new Uint32Array(indices)};
+  }
+
+  function offsetY(mesh, dy){
+    if (!mesh || !dy) return mesh;
+    var p = mesh.positions;
+    for (var i=1;i<p.length;i+=3) p[i]+=dy;
+    return mesh;
+  }
+  function tintMesh(mesh, color, name){
+    if (mesh) { mesh.color = color; mesh.name = name; }
+    return mesh;
+  }
+
+  // --- analytic pitched roofs (hip/gable/skillion/pyramidal) from the footprint's oriented
+  // bounding box (OABB) — robust for any polygon shape (convex or not), and geometrically exact
+  // for rectangular footprints, which is the large majority of real buildings.
+  function normalize2(v){
+    var len = Math.hypot(v.x, v.z);
+    return len > 1e-9 ? { x:v.x/len, z:v.z/len } : { x:0, z:0 };
+  }
+
+  function convexHull2(points){
+    var pts = points.slice().sort(function(a,b){ return a.x - b.x || a.z - b.z; });
+    if (pts.length <= 2) return pts;
+    function cross(o,a,b){ return (a.x-o.x)*(b.z-o.z) - (a.z-o.z)*(b.x-o.x); }
+    var lower = [];
+    for (var i=0;i<pts.length;i++){
+      while (lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], pts[i]) <= 0) lower.pop();
+      lower.push(pts[i]);
+    }
+    var upper = [];
+    for (var j=pts.length-1;j>=0;j--){
+      while (upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], pts[j]) <= 0) upper.pop();
+      upper.push(pts[j]);
+    }
+    lower.pop(); upper.pop();
+    return lower.concat(upper);
+  }
+
+  // minimum-area oriented bounding box via rotating calipers over the convex hull
+  function computeOABB(points){
+    var hull = convexHull2(points.map(function(p){ return {x:p.x, z:p.y}; }));
+    if (hull.length < 2){
+      return { center:{x:0,z:0}, axisLong:{x:1,z:0}, axisShort:{x:0,z:1}, lengthLong:1, lengthShort:1 };
+    }
+    var best = null;
+    for (var i=0; i<hull.length; i++){
+      var a = hull[i], b = hull[(i+1)%hull.length];
+      var edge = normalize2({ x:b.x-a.x, z:b.z-a.z });
+      if (edge.x === 0 && edge.z === 0) continue;
+      var perp = { x:-edge.z, z:edge.x };
+      var minE=Infinity, maxE=-Infinity, minP=Infinity, maxP=-Infinity;
+      hull.forEach(function(p){
+        var e = p.x*edge.x + p.z*edge.z;
+        var pr = p.x*perp.x + p.z*perp.z;
+        if (e<minE) minE=e; if (e>maxE) maxE=e;
+        if (pr<minP) minP=pr; if (pr>maxP) maxP=pr;
+      });
+      var w = maxE-minE, h = maxP-minP, area = w*h;
+      if (!best || area < best.area){
+        var cE=(minE+maxE)/2, cP=(minP+maxP)/2;
+        best = {
+          area: area,
+          center: { x: edge.x*cE + perp.x*cP, z: edge.z*cE + perp.z*cP },
+          edgeDir: edge, perpDir: perp, edgeLen: w, perpLen: h
+        };
+      }
+    }
+    if (!best) return { center:{x:0,z:0}, axisLong:{x:1,z:0}, axisShort:{x:0,z:1}, lengthLong:1, lengthShort:1 };
+    var edgeIsLong = best.edgeLen >= best.perpLen;
+    return {
+      center: best.center,
+      axisLong: edgeIsLong ? best.edgeDir : best.perpDir,
+      axisShort: edgeIsLong ? best.perpDir : best.edgeDir,
+      lengthLong: Math.max(best.edgeLen, best.perpLen),
+      lengthShort: Math.min(best.edgeLen, best.perpLen)
+    };
+  }
+
+  // gabled / skillion: directional roofs, not derivable from a pure distance field — the OABB
+  // (bounding rectangle) gives a robust ridge/slope direction for any footprint shape.
+  function buildOABBRoofGeometry(outerPts, wallH, roofH, roofShape){
+    var oabb = computeOABB(outerPts);
+    var L = Math.max(oabb.lengthLong, 0.5), W = Math.max(oabb.lengthShort, 0.5);
+    var ax = oabb.axisLong, ay = oabb.axisShort, c = oabb.center;
+
+    function pt(sLong, sShort, y){
+      return {
+        x: c.x + ax.x*(sLong*L/2) + ay.x*(sShort*W/2),
+        y: y,
+        z: c.z + ax.z*(sLong*L/2) + ay.z*(sShort*W/2)
+      };
+    }
+
+    var w00 = pt(-1,-1,wallH), w10 = pt(1,-1,wallH), w11 = pt(1,1,wallH), w01 = pt(-1,1,wallH);
+    var topY = wallH + roofH;
+    var positions = [];
+    function tri(p1,p2,p3){ positions.push(p1.x,p1.y,p1.z, p2.x,p2.y,p2.z, p3.x,p3.y,p3.z); }
+    function quad(p1,p2,p3,p4){ tri(p1,p2,p3); tri(p1,p3,p4); }
+
+    if (roofShape === 'skillion'){
+      var hi1 = pt(1,1,topY), hi0 = pt(-1,1,topY);
+      quad(w00, w10, hi1, hi0);
+    } else { // gabled
+      var r0 = pt(-1,0,topY), r1 = pt(1,0,topY);
+      quad(w00, w10, r1, r0);
+      quad(r0, r1, w11, w01);
+      tri(w10, w11, r1);
+      tri(w01, w00, r0);
+    }
+
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  // pyramidal: forced single apex regardless of footprint shape (per OSM roof:shape semantics) —
+  // a fan of triangles from the centroid, distinct from "hipped" which follows the natural ridge.
+  function buildPyramidalRoofGeometry(outerPts, wallH, roofH){
+    var cx = 0, cz = 0;
+    outerPts.forEach(function(p){ cx += p.x; cz += p.y; });
+    cx /= outerPts.length; cz /= outerPts.length;
+    var positions = [];
+    for (var i=0; i<outerPts.length; i++){
+      var p1 = outerPts[i], p2 = outerPts[(i+1)%outerPts.length];
+      positions.push(p1.x, wallH, p1.y,  p2.x, wallH, p2.y,  cx, wallH+roofH, cz);
+    }
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  // hipped (and any other/exotic roof:shape as a generic pitched fallback): general hip roof for
+  // ANY polygon shape (convex or concave — L-shapes, T-shapes...), not just rectangles.
+  // Method: height at any point = tan(pitch) * (distance to the nearest footprint edge) — this is
+  // exactly what a straight-skeleton hip roof is (the medial-axis-driven ridge/valley structure
+  // emerges naturally from this distance field), without implementing full skeleton event
+  // handling (edge/split events for reflex vertices). The footprint is triangulated (earcut) then
+  // each triangle is finely subdivided so ridges/valleys show up as creases in the mesh — an
+  // approximation, but a correct and robust one for any simple polygon.
+  function pointSegDist(px,pz, ax,az, bx,bz){
+    var dx=bx-ax, dz=bz-az;
+    var len2 = dx*dx+dz*dz;
+    var t = len2>1e-12 ? ((px-ax)*dx+(pz-az)*dz)/len2 : 0;
+    t = Math.max(0, Math.min(1,t));
+    var cx=ax+t*dx, cz=az+t*dz;
+    return Math.hypot(px-cx, pz-cz);
+  }
+
+  function minDistToRing(px, pz, ring){
+    var m = Infinity;
+    for (var i=0;i<ring.length;i++){
+      var a = ring[i], b = ring[(i+1)%ring.length];
+      var d = pointSegDist(px,pz,a.x,a.y,b.x,b.y);
+      if (d<m) m=d;
+    }
+    return m;
+  }
+
+  function triangulateFootprint(outerPts){
+    var flat = [];
+    outerPts.forEach(function(p){ flat.push(p.x, p.y); });
+    var idx = earcut(flat);
+    var tris = [];
+    for (var i=0;i<idx.length;i+=3){
+      tris.push([outerPts[idx[i]], outerPts[idx[i+1]], outerPts[idx[i+2]]]);
+    }
+    return tris;
+  }
+
+  // real CGAL straight skeleton (via the `straight-skeleton` WASM package) — correct hip/valley
+  // structure for ANY polygon (concave included), with real geometric event handling instead of
+  // the heightfield approximation below. Returns null (caller falls back) if the library isn't
+  // ready yet, the polygon is degenerate, or the WASM call throws — CGAL's algorithm can fail on
+  // messy/self-intersecting real-world OSM footprints, so this must never be the only path.
+  function ringToSkeletonInput(pts, ccw){
+    var area = 0;
+    for (var i=0;i<pts.length;i++){
+      var a = pts[i], b = pts[(i+1)%pts.length];
+      area += a.x*b.y - b.x*a.y;
+    }
+    var ordered = ((area > 0) === ccw) ? pts.slice() : pts.slice().reverse();
+    var ring = ordered.map(function(p){ return [p.x, p.y]; });
+    ring.push(ring[0].slice());
+    return ring;
+  }
+
+  function buildHipRoofSkeleton(built, wallH, roofH){
+    if (!skeletonReady || typeof SkeletonBuilder === 'undefined') return null;
+    var outerPts = built.outerPts;
+    if (!outerPts || outerPts.length < 3) return null;
+
+    var polygonInput = [ ringToSkeletonInput(outerPts, true) ];
+    (built.holePtsList || []).forEach(function(h){
+      if (h.length >= 3) polygonInput.push(ringToSkeletonInput(h, false));
+    });
+
+    var skel;
+    try { skel = SkeletonBuilder.buildFromPolygon(polygonInput); }
+    catch(e){ return null; }
+    if (!skel || !skel.vertices || !skel.vertices.length || !skel.polygons || !skel.polygons.length) return null;
+
+    var maxTime = 0;
+    skel.vertices.forEach(function(v){ if (v[2] > maxTime) maxTime = v[2]; });
+    if (maxTime < 1e-6) return null;
+    var scale = roofH / maxTime;
+
+    var pts3d = skel.vertices.map(function(v){
+      return { x: v[0], z: v[1], y: wallH + scale*v[2] };
+    });
+
+    var positions = [];
+    skel.polygons.forEach(function(faceIdx){
+      if (faceIdx.length < 3) return;
+      if (faceIdx.length === 3){
+        var a=pts3d[faceIdx[0]], b=pts3d[faceIdx[1]], c=pts3d[faceIdx[2]];
+        positions.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z);
+        return;
+      }
+      var flat = [];
+      faceIdx.forEach(function(idx){ flat.push(pts3d[idx].x, pts3d[idx].z); });
+      var tris = earcut(flat);
+      for (var t=0; t<tris.length; t+=3){
+        var p1=pts3d[faceIdx[tris[t]]], p2=pts3d[faceIdx[tris[t+1]]], p3=pts3d[faceIdx[tris[t+2]]];
+        positions.push(p1.x,p1.y,p1.z, p2.x,p2.y,p2.z, p3.x,p3.y,p3.z);
+      }
+    });
+    if (!positions.length) return null;
+
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  function buildHipRoofHeightfield(outerPts, wallH, roofH){
+    var tris0 = triangulateFootprint(outerPts);
+    if (!tris0.length) return buildPyramidalRoofGeometry(outerPts, wallH, roofH);
+
+    // two passes: (1) sample raw (unscaled) distance-to-edge at every fine grid point actually
+    // used by the mesh, tracking the true max across them — sampling only vertices/centroids for
+    // this (as a first version of this function did) can miss the real farthest point inside a
+    // triangle, understating the max and making later points overshoot past wallH+roofH;
+    // (2) rescale every stored point by that true max, so the roof reaches exactly wallH+roofH
+    // at its farthest point from any edge, never beyond.
+    var triGrids = [];
+    var trueMax = 1e-6;
+    tris0.forEach(function(t){
+      var e0 = Math.hypot(t[1].x-t[0].x, t[1].y-t[0].y);
+      var e1 = Math.hypot(t[2].x-t[1].x, t[2].y-t[1].y);
+      var e2 = Math.hypot(t[0].x-t[2].x, t[0].y-t[2].y);
+      var n = Math.max(1, Math.min(8, Math.round(Math.max(e0,e1,e2) / 1.5))); // ~1.5m facets, capped
+
+      var grid = [];
+      for (var i=0;i<=n;i++){
+        grid[i] = [];
+        for (var j=0;j<=n-i;j++){
+          var u=i/n, v=j/n, w=1-u-v;
+          var x = w*t[0].x + u*t[1].x + v*t[2].x;
+          var y = w*t[0].y + u*t[1].y + v*t[2].y;
+          var d = minDistToRing(x, y, outerPts);
+          if (d > trueMax) trueMax = d;
+          grid[i][j] = { x:x, y:y, d:d };
+        }
+      }
+      triGrids.push({ n:n, grid:grid });
+    });
+
+    var scale = roofH / trueMax;
+    var positions = [];
+    triGrids.forEach(function(tg){
+      var n = tg.n, grid = tg.grid;
+      for (var ii=0; ii<n; ii++){
+        for (var jj=0; jj<n-ii; jj++){
+          var a = grid[ii][jj], b = grid[ii+1][jj], c = grid[ii][jj+1];
+          var ah = wallH+scale*a.d, bh = wallH+scale*b.d, ch = wallH+scale*c.d;
+          positions.push(a.x,ah,a.y, b.x,bh,b.y, c.x,ch,c.y);
+          if (jj < n-ii-1){
+            var d2 = grid[ii+1][jj+1];
+            var dh = wallH+scale*d2.d;
+            positions.push(b.x,bh,b.y, d2.x,dh,d2.y, c.x,ch,c.y);
+          }
+        }
+      }
+    });
+
+    return { positions: new Float32Array(positions), indices: null };
+  }
+
+  // OSM colour tags are almost always #rrggbb / #rgb — only trust that shape, anything else
+  // (a CSS colour name, a typo) falls back to the layer default rather than guessing.
+  function parseOsmHexColor(val, fallback){
+    if (!val) return fallback;
+    var v = val.trim();
+    if (/^#?[0-9a-fA-F]{6}$/.test(v) || /^#?[0-9a-fA-F]{3}$/.test(v)){
+      if (v[0] !== '#') v = '#' + v;
+      try {
+        var hex = v.slice(1);
+        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+        var num = parseInt(hex, 16);
+        return { r:((num>>16)&255)/255, g:((num>>8)&255)/255, b:(num&255)/255 };
+      } catch(e){ return fallback; }
+    }
+    return fallback;
+  }
+  function hexToColor(hex){
+    var num = parseInt(hex.replace('#',''), 16);
+    return { r:((num>>16)&255)/255, g:((num>>8)&255)/255, b:(num&255)/255 };
+  }
+  function scaleColor(c, f){ return { r:c.r*f, g:c.g*f, b:c.b*f }; }
+
+  function buildFlatAreaMesh(geom, color, center, yLevel){
+    var rings = ringsToPointLists(geom.coordinates, center);
+    if (!rings) return null;
+    var mesh = buildFlatCapPolygon(rings.outerPts, rings.holePtsList, yLevel);
+    return tintMesh(mesh, color, 'area');
+  }
+
+  function estimateRoadWidth(props){
+    if (props.width){
+      var w = parseFloat(props.width);
+      if (!isNaN(w) && w > 0) return w;
+    }
+    var byClass = {
+      motorway:12, trunk:11, primary:9, secondary:8, tertiary:7,
+      residential:6, unclassified:6, living_street:5.5, service:3.5, track:3,
+      footway:2, path:1.5, cycleway:2, pedestrian:4, steps:1.5
+    };
+    if (byClass[props.highway]) return byClass[props.highway];
+    if (props.lanes){
+      var lanes = parseFloat(props.lanes);
+      if (!isNaN(lanes) && lanes > 0) return Math.max(3, lanes * 3.2);
+    }
+    return 5;
+  }
+
+  // building height + roof estimate from OSM tags (height/building:levels, roof:shape/roof:height/roof:levels)
+  function buildingHeightAndRoof(tags){
+    var h = null;
+    if (tags.height) h = parseFloat(tags.height);
+    else if (tags['building:levels']) h = parseFloat(tags['building:levels']) * 3;
+    var totalHeight = (h && !isNaN(h)) ? h : 9;
+
+    var roofShape = tags['roof:shape'] || 'flat';
+    var roofHeight = 0;
+    if (roofShape !== 'flat'){
+      if (tags['roof:height']) roofHeight = parseFloat(tags['roof:height']);
+      else if (tags['roof:levels']) roofHeight = parseFloat(tags['roof:levels']) * 3;
+      else roofHeight = Math.min(2.5, totalHeight * 0.25);
+      if (isNaN(roofHeight) || roofHeight <= 0) roofHeight = 0;
+      if (roofHeight >= totalHeight) roofHeight = totalHeight * 0.4;
+    }
+
+    // min_height / building:min_level: elevates a building:part above ground (podium, tiered
+    // tower, wing starting above a passage...) — mirrors how blender-osm stacks building:part.
+    var minHeight = 0;
+    if (tags.min_height) minHeight = parseFloat(tags.min_height);
+    else if (tags['building:min_level']) minHeight = parseFloat(tags['building:min_level']) * 3;
+    if (isNaN(minHeight) || minHeight < 0) minHeight = 0;
+    if (minHeight >= totalHeight) minHeight = 0; // guard against bad/contradictory tagging
+
+    return { totalHeight: totalHeight, roofShape: roofShape, roofHeight: roofHeight, wallHeight: totalHeight - roofHeight - minHeight, minHeight: minHeight };
+  }
+
+  function buildProps(el, tags){
+    var props = { osm_id: el.id, osm_type: el.type };
+    Object.keys(tags).forEach(function(k){ props[k] = tags[k]; });
+    if (tags.building || tags['building:part']){
+      var bh = buildingHeightAndRoof(tags);
+      props.height_est_m = bh.totalHeight;
+      props.roof_shape = bh.roofShape;
+      props.roof_height_m = bh.roofHeight;
+      props.wall_height_m = bh.wallHeight;
+      props.min_height_m = bh.minHeight;
+    }
+    if (tags.barrier){
+      props.wall_height_m = (tags.barrier === 'wall') ? 1.8 : (tags.barrier === 'hedge' ? 1.2 : 1.1);
+    }
+    return props;
+  }
+
+  function elementsToGeoJSON(elements, filterFn){
+    var features = [];
+    for (var i=0; i<elements.length; i++){
+      var el = elements[i];
+
+      if (el.type === 'relation'){
+        var rtags = el.tags || {};
+        if (!filterFn(rtags) || !el.members) continue;
+        var outerRings = [], innerRings = [];
+        el.members.forEach(function(m){
+          if (!m.geometry) return;
+          var ring = m.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+          if (ring.length < 3) return;
+          (m.role === 'inner' ? innerRings : outerRings).push(ring);
+        });
+        outerRings.forEach(function(ring, idx){
+          var coordinates = [ring].concat(idx === 0 ? innerRings : []);
+          features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates: coordinates }, properties: buildProps(el, rtags) });
+        });
+        continue;
+      }
+
+      var tags = el.tags || {};
+      if (!filterFn(tags)) continue;
+
+      var geometry;
+      if (el.type === 'node'){
+        geometry = { type:'Point', coordinates:[el.lon, el.lat] };
+      } else if (el.type === 'way' && el.geometry){
+        var coords = el.geometry.filter(Boolean).map(function(pt){ return [pt.lon, pt.lat]; });
+        if (coords.length < 2) continue;
+        var closed = coords.length > 2 &&
+          coords[0][0] === coords[coords.length-1][0] &&
+          coords[0][1] === coords[coords.length-1][1];
+        if (closed && isAreaTag(tags)){
+          geometry = { type:'Polygon', coordinates:[coords] };
+        } else {
+          geometry = { type:'LineString', coordinates: coords };
+        }
+      } else {
+        continue;
+      }
+
+      features.push({ type:'Feature', geometry: geometry, properties: buildProps(el, tags) });
+    }
+    return { type:'FeatureCollection', features: features };
+  }
+
+  function isAreaTag(tags){
+    return !!tags.building || !!tags['building:part'] ||
+      tags.natural === 'water' || tags.natural === 'wood' ||
+      ['grass','forest','meadow'].indexOf(tags.landuse) !== -1;
+  }
+
+  function downloadLayer(key){
+    var entry = resultLayers[key];
+    if (!entry || !entry.fc.features.length) return;
+    var blob = new Blob([JSON.stringify(entry.fc)], { type:'application/geo+json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = key + '.geojson';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  }
+
+  // building walls (+ optional roof), returns 1-2 mesh descriptors.
+  function buildBuildingMeshDescs(geom, props, defaultColor, center){
+    var rings = ringsToPointLists(geom.coordinates, center);
+    if (!rings) return [];
+
+    var totalH = props.height_est_m || 9;
+    var roofH = props.roof_height_m || 0;
+    var minH = props.min_height_m || 0;
+    var wallH = props.wall_height_m;
+    if (!wallH || wallH < 0.3) wallH = totalH - roofH - minH;
+    if (wallH < 0.3) wallH = totalH;
+
+    var wallColor = parseOsmHexColor(props['building:colour'], defaultColor);
+
+    var out = [];
+    var wallMesh = buildExtrudedPolygon(rings.outerPts, rings.holePtsList, minH, minH+wallH);
+    if (wallMesh) out.push(tintMesh(wallMesh, wallColor, 'building'));
+
+    if (roofH > 0.2 && props.roof_shape && props.roof_shape !== 'flat'){
+      var shape2 = props.roof_shape;
+      var roofGeom;
+      var builtForSkeleton = { outerPts: rings.outerPts, holePtsList: rings.holePtsList };
+      if (shape2 === 'gabled' || shape2 === 'skillion'){
+        roofGeom = buildOABBRoofGeometry(rings.outerPts, wallH, roofH, shape2);
+      } else if (shape2 === 'pyramidal'){
+        roofGeom = buildPyramidalRoofGeometry(rings.outerPts, wallH, roofH);
+      } else {
+        roofGeom = buildHipRoofSkeleton(builtForSkeleton, wallH, roofH) || buildHipRoofHeightfield(rings.outerPts, wallH, roofH);
+      }
+      if (roofGeom){
+        offsetY(roofGeom, minH);
+        var roofColor = parseOsmHexColor(props['roof:colour'], scaleColor(wallColor, 0.75));
+        out.push(tintMesh(roofGeom, roofColor, 'roof'));
+      }
+    }
+    return out;
+  }
+
+  // roads/walls/generic lines -> a chain of oriented boxes; points -> lamp/tree/furniture prop meshes.
+  // Returns an array of mesh descriptors (0 or more).
+  function buildFeatureMeshDescs(key, feature, color, center){
+    var geom = feature.geometry;
+    var props = feature.properties || {};
+
+    if (key === 'buildings' && geom.type === 'Polygon'){
+      return buildBuildingMeshDescs(geom, props, color, center);
+    }
+
+    if ((key === 'water' || key === 'vegetation') && geom.type === 'Polygon'){
+      var m = buildFlatAreaMesh(geom, color, center, key === 'water' ? 0.02 : 0.03);
+      return m ? [m] : [];
+    }
+
+    if (geom.type === 'LineString'){
+      var coords = geom.coordinates;
+      var width, yLevel, boxHeight;
+      if (key === 'roads'){ width = estimateRoadWidth(props); boxHeight = 0.15; yLevel = boxHeight/2; }
+      else if (key === 'walls'){ width = 0.25; boxHeight = props.wall_height_m || 1.5; yLevel = boxHeight/2; }
+      else { width = 0.6; boxHeight = 0.15; yLevel = boxHeight/2; }
+      var out = [];
+      for (var i=0; i<coords.length-1; i++){
+        var a = project(coords[i][1], coords[i][0], center);
+        var b = project(coords[i+1][1], coords[i+1][0], center);
+        var dx = b.x - a.x, dz = b.z - a.z;
+        var len = Math.sqrt(dx*dx + dz*dz);
+        if (len < 0.01) continue;
+        var seg = buildBoxAt((a.x+b.x)/2, yLevel, (a.z+b.z)/2, len, boxHeight, width, -Math.atan2(dz, dx));
+        out.push(tintMesh(seg, color, key));
+      }
+      return out;
+    }
+
+    if (geom.type === 'Point'){
+      var p = project(geom.coordinates[1], geom.coordinates[0], center);
+      var out2 = [];
+      if (key === 'lamps'){
+        out2.push(tintMesh(buildCylinderAt(p.x,0,p.z, 0.08,0.08,4,8), color, 'lamp-pole'));
+        out2.push(tintMesh(buildSphereAt(p.x,4.1,p.z, 0.3,8), color, 'lamp-bulb'));
+      } else if (key === 'trees'){
+        out2.push(tintMesh(buildCylinderAt(p.x,0,p.z, 0.15,0.2,2,8), {r:0.42,g:0.29,b:0.18}, 'tree-trunk'));
+        out2.push(tintMesh(buildCylinderAt(p.x,2,p.z, 0,1.6,3.5,10), color, 'tree-canopy'));
+      } else {
+        out2.push(tintMesh(buildBoxAt(p.x,0.3,p.z, 0.6,0.6,0.6, 0), color, 'furniture'));
+      }
+      return out2;
+    }
+    return [];
+  }
+
+  // full mesh-descriptor list for the fetched zone, terrain-offset applied per feature — this is
+  // the single geometry pipeline consumed by both the live Cesium preview and every export format.
+  function buildZoneMeshes(center, terrainFn){
+    var meshes = [];
+    Object.keys(resultLayers).forEach(function(key){
+      var fc = resultLayers[key].fc;
+      var color = hexToColor(LAYERS[key].color);
+      fc.features.forEach(function(f){
+        var descs = buildFeatureMeshDescs(key, f, color, center);
+        if (!descs.length) return;
+        var dy = 0;
+        if (terrainFn){
+          var rp = representativeLonLat(f.geometry);
+          if (rp){ var pp = project(rp.lat, rp.lon, center); dy = terrainFn(pp.x, pp.z); }
+        }
+        descs.forEach(function(d){ offsetY(d, dy); meshes.push(d); });
+      });
+    });
+    return meshes;
+  }
+
+  // --- glTF-Binary (.glb) build — the single asset both the live Cesium preview and the download
+  // button share: one geometry pipeline (buildZoneMeshes + optional ground descriptor) feeds a
+  // gltf-transform Document once, and the resulting bytes go both to Cesium.Model.fromGltfAsync
+  // (display) and to a Blob download (export). Positions are already final world-local — no scene
+  // graph / matrixWorld concept needed here at all (that whole class of bug, hit once already with
+  // THREE.OBJExporter's matrixWorld, structurally can't recur).
+  function buildGlbBinary(meshDescs, orthoBytesForTexture){
+    var GT = window.__gltfTransform;
+    var doc = new GT.Document();
+    var buffer = doc.createBuffer();
+    var scene = doc.createScene('zone');
+    var materialCache = {};
+    var orthoTextureNode = orthoBytesForTexture
+      ? doc.createTexture('ortho').setImage(orthoBytesForTexture).setMimeType('image/jpeg')
+      : null;
+
+    function colorKey(c){ return Math.round(c.r*255)+','+Math.round(c.g*255)+','+Math.round(c.b*255); }
+    function materialFor(color, useTexture){
+      var key = (useTexture ? 'tex:' : 'c:') + colorKey(color);
+      if (materialCache[key]) return materialCache[key];
+      var mat = doc.createMaterial().setBaseColorFactor([color.r, color.g, color.b, 1]).setRoughnessFactor(0.9).setMetallicFactor(0.0);
+      if (useTexture && orthoTextureNode) mat.setBaseColorTexture(orthoTextureNode);
+      materialCache[key] = mat;
+      return mat;
+    }
+
+    // flat per-face normals, accumulated per-vertex then normalized — indexed or non-indexed.
+    function computeNormals(positions, indices){
+      var n = positions.length/3;
+      var normals = new Float32Array(n*3);
+      var idx = indices || (function(){ var a=new Uint32Array(n); for (var i=0;i<n;i++) a[i]=i; return a; })();
+      for (var t=0;t<idx.length;t+=3){
+        var ia=idx[t], ib=idx[t+1], ic=idx[t+2];
+        var ax=positions[ia*3],ay=positions[ia*3+1],az=positions[ia*3+2];
+        var bx=positions[ib*3],by=positions[ib*3+1],bz=positions[ib*3+2];
+        var cx=positions[ic*3],cy=positions[ic*3+1],cz=positions[ic*3+2];
+        var ux=bx-ax,uy=by-ay,uz=bz-az, vx=cx-ax,vy=cy-ay,vz=cz-az;
+        var nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+        normals[ia*3]+=nx; normals[ia*3+1]+=ny; normals[ia*3+2]+=nz;
+        normals[ib*3]+=nx; normals[ib*3+1]+=ny; normals[ib*3+2]+=nz;
+        normals[ic*3]+=nx; normals[ic*3+1]+=ny; normals[ic*3+2]+=nz;
+      }
+      for (var i2=0;i2<n;i2++){
+        var x=normals[i2*3],y=normals[i2*3+1],z=normals[i2*3+2];
+        var len=Math.hypot(x,y,z)||1;
+        normals[i2*3]=x/len; normals[i2*3+1]=y/len; normals[i2*3+2]=z/len;
+      }
+      return normals;
+    }
+
+    meshDescs.forEach(function(d){
+      if (!d || !d.positions || !d.positions.length) return;
+      var normals = computeNormals(d.positions, d.indices);
+      var posAcc = doc.createAccessor('POSITION', buffer).setType('VEC3').setArray(d.positions);
+      var normAcc = doc.createAccessor('NORMAL', buffer).setType('VEC3').setArray(normals);
+      var prim = doc.createPrimitive().setAttribute('POSITION', posAcc).setAttribute('NORMAL', normAcc);
+
+      var useTexture = !!(d.uvs && orthoTextureNode);
+      if (d.uvs){
+        var uvAcc = doc.createAccessor('TEXCOORD_0', buffer).setType('VEC2').setArray(d.uvs);
+        prim.setAttribute('TEXCOORD_0', uvAcc);
+      }
+      if (d.indices){
+        var idxAcc = doc.createAccessor('indices', buffer).setType('SCALAR').setArray(d.indices);
+        prim.setIndices(idxAcc);
+      }
+      var color = d.color || {r:1,g:1,b:1};
+      prim.setMaterial(materialFor(color, useTexture));
+
+      var glMesh = doc.createMesh().addPrimitive(prim);
+      var node = doc.createNode(d.name || 'mesh').setMesh(glMesh);
+      scene.addChild(node);
+    });
+
+    var io = new GT.WebIO();
+    return io.writeBinary(doc);
+  }
+
+  // --- .OBJ serializer, directly from mesh descriptors (replaces THREE.OBJExporter — no
+  // scene-graph / matrixWorld to forget to update, positions are already final). Non-indexed
+  // meshes (most roof functions) are emitted as flat triangle lists; indexed meshes share verts.
+  function buildObjText(meshDescs){
+    var lines = ['# geometrie extraite OSM/IGN'];
+    var vOffset = 0;
+    meshDescs.forEach(function(d, mi){
+      if (!d || !d.positions || !d.positions.length) return;
+      lines.push('o ' + (d.name || 'mesh') + '_' + mi);
+      var n = d.positions.length/3;
+      for (var i=0;i<n;i++){
+        lines.push('v ' + d.positions[i*3].toFixed(4) + ' ' + d.positions[i*3+1].toFixed(4) + ' ' + d.positions[i*3+2].toFixed(4));
+      }
+      if (d.uvs){
+        for (var i2=0;i2<n;i2++) lines.push('vt ' + d.uvs[i2*2].toFixed(5) + ' ' + d.uvs[i2*2+1].toFixed(5));
+      }
+      var idx = d.indices || (function(){ var a=new Uint32Array(n); for (var k=0;k<n;k++) a[k]=k; return a; })();
+      for (var t=0;t<idx.length;t+=3){
+        var a=idx[t]+1+vOffset, b=idx[t+1]+1+vOffset, c=idx[t+2]+1+vOffset;
+        if (d.uvs){
+          var at=idx[t]+1+vOffset, bt=idx[t+1]+1+vOffset, ct=idx[t+2]+1+vOffset;
+          lines.push('f ' + a+'/'+at + ' ' + b+'/'+bt + ' ' + c+'/'+ct);
+        } else {
+          lines.push('f ' + a + ' ' + b + ' ' + c);
+        }
+      }
+      vOffset += n;
+    });
+    return lines.join('\n') + '\n';
+  }
+
+  // --- ground descriptor (terrain-draped mesh or flat quad), same shape as a building mesh desc,
+  // with optional UVs if an orthophoto texture is available.
+  function buildGroundMeshDesc(center, extentX, extentZ, orthoTexBytes){
+    var g = terrainGrid ? buildTerrainGroundGeometry(terrainGrid, center) : buildFlatGroundGeometry(extentX, extentZ);
+    if (orthoTexBytes && orthoBounds){
+      g.uvs = applyGeoUV(g.positions, orthoBounds, center);
+      g.color = {r:1,g:1,b:1};
+    } else {
+      g.color = {r:0.078,g:0.09,b:0.114};
+    }
+    g.name = 'terrain';
+    return g;
+  }
+
+  // --- live 3D display: the SAME glb bytes built for export, loaded as a Cesium.Model positioned
+  // at the zone center via an east-north-up local frame (glTF's Y-up convention is what
+  // Cesium.Model expects — matches our project()/mesh authoring convention with no axis remapping).
+  var currentModelPrimitive = null;
+  function showZoneModel(){
+    if (!fetchBounds) return Promise.resolve();
+    if (!window.__gltfTransform) { setStatus('.glb : librairie pas encore chargée, réessaie dans un instant.', true); return Promise.resolve(); }
+    var center = fetchBounds.getCenter();
+    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
+    var meshes = buildZoneMeshes(center, terrainFn);
+
+    var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
+    var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
+    var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
+    var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
+    var ground = buildGroundMeshDesc(center, extentX, extentZ, orthoBytes);
+    var allMeshes = meshes.concat([ground]);
+
+    return Promise.all([
+      buildGlbBinary(allMeshes, orthoBytes),
+      sampleGroundHeight(center.lat, center.lng) // 0 unless Cesium Ion World Terrain is active
+    ]).then(function(results){
+      var glbBytes = results[0], groundHeight = results[1];
+      window.__lastGlb = glbBytes; // reused by the download button — same bytes, no rebuild
+      if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
+      var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
+      var url = URL.createObjectURL(blob);
+      return Cesium.Model.fromGltfAsync({
+        url: url,
+        modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(center.lng, center.lat, groundHeight))
+      }).then(function(model){
+        URL.revokeObjectURL(url);
+        currentModelPrimitive = viewer.scene.primitives.add(model);
+        recenterZoneCamera(center, extentX, extentZ, groundHeight);
+      }).catch(function(err){
+        URL.revokeObjectURL(url);
+        setStatus('Échec affichage 3D : ' + err.message, true);
+      });
+    }).catch(function(err){
+      setStatus('Échec construction du modèle : ' + err.message, true);
+    });
+  }
+
+  function recenterZoneCamera(center, extentX, extentZ, groundHeight){
+    var dist = Math.max(extentX, extentZ, 60);
+    var originECEF = Cesium.Cartesian3.fromDegrees(center.lng, center.lat, groundHeight||0);
+    var enu = Cesium.Transforms.eastNorthUpToFixedFrame(originECEF);
+    var camLocal = Cesium.Cartesian3.fromElements(dist*0.5, -dist*0.5, dist*0.55); // (east, north-negative-ish, up) offset
+    var camWorld = Cesium.Matrix4.multiplyByPoint(enu, camLocal, new Cesium.Cartesian3());
+    viewer.camera.flyTo({
+      destination: camWorld,
+      orientation: { direction: Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(originECEF, camWorld, new Cesium.Cartesian3()), new Cesium.Cartesian3()), up: Cesium.Cartesian3.UNIT_Z },
+      duration: 1.2
+    });
+  }
+
+  recenterBtn.addEventListener('click', function(){
+    if (!fetchBounds) return;
+    var center = fetchBounds.getCenter();
+    var sw = project(fetchBounds.getSouthWest().lat, fetchBounds.getSouthWest().lng, center);
+    var ne = project(fetchBounds.getNorthEast().lat, fetchBounds.getNorthEast().lng, center);
+    var extentX = Math.max(Math.abs(sw.x), Math.abs(ne.x)) * 2 + 40;
+    var extentZ = Math.max(Math.abs(sw.z), Math.abs(ne.z)) * 2 + 40;
+    sampleGroundHeight(center.lat, center.lng).then(function(groundHeight){
+      recenterZoneCamera(center, extentX, extentZ, groundHeight);
+    });
+  });
+
+  // --- export .OBJ ---
+  exportObjBtn.addEventListener('click', function(){
+    if (!fetchBounds) return;
+    var center = fetchBounds.getCenter();
+    var terrainFn = terrainGrid ? buildTerrainSampler(terrainGrid, center) : null;
+    var meshes = buildZoneMeshes(center, terrainFn);
+    if (terrainGrid){
+      var g = buildTerrainGroundGeometry(terrainGrid, center);
+      g.name = 'terrain'; g.color = {r:0.5,g:0.5,b:0.5};
+      meshes = meshes.concat([g]);
+    }
+    var objText = buildObjText(meshes);
+    var blob = new Blob([objText], { type:'text/plain' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'zone.obj';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  exportOrthoBtn.addEventListener('click', function(){
+    if (!orthoBytes) return;
+    var blob = new Blob([orthoBytes], { type:'image/jpeg' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'photo-aerienne.jpg';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  exportGlbBtn.addEventListener('click', function(){
+    if (!fetchBounds) return;
+    if (!window.__gltfTransform){ setStatus('.glb : librairie pas encore chargée, réessaie dans un instant.', true); return; }
+
+    exportGlbBtn.disabled = true;
+    var origLabel = exportGlbBtn.textContent;
+    exportGlbBtn.textContent = 'Export .glb…';
+
+    // reuse the exact bytes already built for the live preview when available (same pipeline,
+    // avoids rebuilding), otherwise (re)build fresh — e.g. right after a fetch, before the model
+    // has finished loading into the scene.
+    var glbPromise = window.__lastGlb ? Promise.resolve(window.__lastGlb) : showZoneModel().then(function(){ return window.__lastGlb; });
+
+    glbPromise.then(function(glbBytes){
+      if (!glbBytes) throw new Error('construction du .glb échouée, voir le statut ci-dessus');
+      var blob = new Blob([glbBytes], { type:'model/gltf-binary' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = 'zone.glb';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+      exportGlbBtn.disabled = false;
+      exportGlbBtn.textContent = origLabel;
+    })
+    .catch(function(err){
+      setStatus('Échec export .glb : ' + err.message, true);
+      exportGlbBtn.disabled = false;
+      exportGlbBtn.textContent = origLabel;
+    });
+  });
+
+  // --- export .abc: no JS library writes real Alembic in-browser, so this generates a
+  // Blender python script that rebuilds the same geometry (same projection/center, so it
+  // lines up with the 3D preview) and exports it via Blender's native Alembic exporter.
+  exportAbcBtn.addEventListener('click', function(){
+    if (!fetchBounds) return;
+    var center = fetchBounds.getCenter();
+    var script = buildBlenderScript(center, terrainGrid);
+    var blob = new Blob([script], { type:'text/x-python' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'export_to_abc.py';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+  });
+
+  // --- fetch handler ---
+  fetchBtn.addEventListener('click', function(){
+    if (!currentBounds) return;
+    var keys = selectedLayerKeys();
+    if (!keys.length){ setStatus('Sélectionne au moins une couche.', true); return; }
+
+    var useIGN = keys.indexOf('buildings') !== -1 && document.getElementById('buildingSource').value === 'ign';
+    var overpassKeys = keys.filter(function(k){ return !(k === 'buildings' && useIGN); });
+
+    var sw = currentBounds.getSouthWest(), ne = currentBounds.getNorthEast();
+    var bbox = sw.lat + ',' + sw.lng + ',' + ne.lat + ',' + ne.lng;
+
+    var parts = [];
+    if (overpassKeys.indexOf('buildings') !== -1){
+      parts.push('way["building"](' + bbox + ');');
+      parts.push('way["building:part"](' + bbox + ');');
+      parts.push('relation["building"]["type"="multipolygon"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('roads') !== -1) parts.push('way["highway"](' + bbox + ');');
+    if (overpassKeys.indexOf('walls') !== -1) parts.push('way["barrier"](' + bbox + ');');
+    if (overpassKeys.indexOf('water') !== -1){
+      parts.push('way["natural"="water"](' + bbox + ');');
+      parts.push('way["waterway"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('vegetation') !== -1){
+      parts.push('way["landuse"~"^(grass|forest|meadow)$"](' + bbox + ');');
+      parts.push('way["natural"="wood"](' + bbox + ');');
+    }
+    if (overpassKeys.indexOf('lamps') !== -1) parts.push('node["highway"="street_lamp"](' + bbox + ');');
+    if (overpassKeys.indexOf('trees') !== -1) parts.push('node["natural"="tree"](' + bbox + ');');
+    if (overpassKeys.indexOf('furniture') !== -1){
+      parts.push('node["amenity"~"^(bench|waste_basket|drinking_water|bicycle_parking)$"](' + bbox + ');');
+      parts.push('node["highway"~"^(traffic_signals|bus_stop)$"](' + bbox + ');');
+    }
+
+    var query = parts.length ? ('[out:json][timeout:60];(' + parts.join('') + ');out geom;') : null;
+
+    fetchBtn.disabled = true;
+    setStatus('<span class="spinner"></span>Interrogation…', false, true);
+
+    resultLayers = {};
+    fetchBounds = null;
+    window.__lastGlb = null;
+    terrainGrid = null;
+    orthoBounds = null;
+    orthoBytes = null;
+    if (currentModelPrimitive){ viewer.scene.primitives.remove(currentModelPrimitive); currentModelPrimitive = null; }
+    recenterBtn.disabled = true;
+    exportObjBtn.disabled = true;
+    exportAbcBtn.disabled = true;
+    exportOrthoBtn.disabled = true;
+    exportGlbBtn.disabled = true;
+    Object.keys(LAYERS).forEach(function(k){
+      document.getElementById('count_'+k).textContent = '–';
+      document.getElementById('dl_'+k).style.display = 'none';
+    });
+
+    var OVERPASS_MIRRORS = [
+      'https://overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter'
+    ];
+
+    function fetchFromMirrors(mirrors, body, lastErr){
+      if (!mirrors.length) return Promise.reject(lastErr || new Error('tous les miroirs Overpass ont échoué'));
+      var url = mirrors[0];
+      setStatus('<span class="spinner"></span>Interrogation d\'Overpass (' + new URL(url).hostname + ')…', false);
+      return fetch(apiProxy(url), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'data=' + encodeURIComponent(body)
+      })
+      .then(function(r){
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' sur ' + new URL(url).hostname);
+        return r.json();
+      })
+      .catch(function(err){
+        return fetchFromMirrors(mirrors.slice(1), body, err);
+      });
+    }
+
+    var wantRelief = document.getElementById('chkRelief').checked;
+    var wantOrtho = document.getElementById('chkOrtho').checked;
+
+    var overpassPromise = query ? fetchFromMirrors(OVERPASS_MIRRORS, query) : Promise.resolve({ elements: [] });
+    var ignPromise = useIGN
+      ? fetchIGNBuildings(currentBounds).catch(function(err){ throw new Error('IGN bâtiments : ' + err.message); })
+      : Promise.resolve(null);
+    var reliefPromise = wantRelief
+      ? fetchIGNElevationGrid(currentBounds).catch(function(err){ throw new Error('IGN relief : ' + err.message); })
+      : Promise.resolve(null);
+    var orthoPromise = wantOrtho
+      ? fetchIGNOrthophoto(currentBounds).catch(function(err){ throw new Error('IGN photo aérienne : ' + err.message); })
+      : Promise.resolve(null);
+
+    Promise.all([overpassPromise, ignPromise, reliefPromise, orthoPromise])
+    .then(function(results){
+      var elements = results[0].elements || [];
+      var ignFc = results[1];
+      terrainGrid = results[2];
+      var orthoResult = results[3];
+      orthoBounds = orthoResult ? { minLat:orthoResult.minLat, maxLat:orthoResult.maxLat, minLon:orthoResult.minLon, maxLon:orthoResult.maxLon } : null;
+      orthoBytes = orthoResult ? orthoResult.bytes : null;
+      keys.forEach(function(key){
+        var def = LAYERS[key];
+        var fc = (key === 'buildings' && useIGN) ? (ignFc || { type:'FeatureCollection', features:[] })
+                                                  : elementsToGeoJSON(elements, def.filter);
+        resultLayers[key] = { fc: fc };
+        document.getElementById('count_'+key).textContent = fc.features.length;
+        if (fc.features.length){
+          document.getElementById('dl_'+key).style.display = 'inline-block';
+        }
+      });
+      var total = keys.reduce(function(sum,k){ return sum + resultLayers[k].fc.features.length; }, 0);
+
+      var reliefTxt = '';
+      if (terrainGrid){
+        var flatEls = [].concat.apply([], terrainGrid.elevations);
+        var delta = Math.max.apply(null, flatEls) - Math.min.apply(null, flatEls);
+        reliefTxt = ' + relief IGN (Δ' + delta.toFixed(1) + 'm sur la zone)';
+      }
+      var orthoTxt = orthoResult ? ' + photo aérienne IGN' : '';
+      setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+      statusEl.classList.add('ok');
+      fetchBtn.disabled = false;
+      if (total > 0){
+        fetchBounds = currentBounds;
+        recenterBtn.disabled = false;
+        exportObjBtn.disabled = false;
+        exportAbcBtn.disabled = false;
+        if (window.__gltfTransform) exportGlbBtn.disabled = false;
+        setStatus('<span class="spinner"></span>Construction du modèle 3D…', false);
+        showZoneModel().then(function(){
+          setStatus(total + ' géométries récupérées' + (useIGN ? ' (bâtiments : IGN)' : '') + reliefTxt + orthoTxt + '.', false);
+          statusEl.classList.add('ok');
+        });
+      }
+      if (orthoResult) exportOrthoBtn.disabled = false;
+    })
+    .catch(function(err){
+      setStatus('Échec : ' + err.message + ' (réessaie, ou réduis la zone)', true);
+      fetchBtn.disabled = false;
+    });
+  });
+
+  function buildBlenderScript(center, terrain){
+    return [
+"# -*- coding: utf-8 -*-",
+"# Genere par l'extracteur de geometries OSM/IGN (meme centre de projection que l'apercu 3D navigateur).",
+"#",
+"# Usage :",
+"#  1) Telecharge les .geojson des couches voulues (boutons a gauche) dans LE MEME DOSSIER que ce script.",
+"#  2) Dans Blender : onglet \"Scripting\" -> Open -> ce fichier -> Run Script (Alt+P).",
+"#  3) zone.abc est ecrit a cote de ce script.",
+"#",
+"# Toits (roof:shape != flat) : hipped -> heightfield general (triangulation + distance au bord,",
+"# meme methode que l'apercu 3D navigateur), gabled/skillion -> rectangle englobant oriente (OABB),",
+"# pyramidal -> eventail depuis le centroide. Coherent avec le rendu web.",
+"# min_height / building:min_level : elevent le mur au-dessus du sol (socle, tour a etages...).",
+"# Trous (cours interieures, relations multipolygon avec role \"inner\") : evides par un modifier",
+"# Boolean DIFFERENCE, un objet-decoupe temporaire par trou, supprime apres application.",
+"# Couleurs : building:colour / roof:colour appliquees si elles sont un hex #rrggbb/#rgb valide.",
+"# Relief (TERRAIN, si \"Relief du terrain\" etait coche lors de la recuperation) : chaque objet est",
+"# decale verticalement selon l'altitude locale IGN a sa position, et un maillage de sol suivant le",
+"# relief est ajoute -- meme grille, meme methode que l'apercu 3D navigateur.",
+"",
+"import bpy, bmesh, json, math, os",
+"",
+"FOLDER = os.path.dirname(os.path.abspath(bpy.data.filepath)) if bpy.data.filepath else os.path.dirname(os.path.abspath(__file__))",
+'CENTER_LAT = ' + center.lat.toFixed(8),
+'CENTER_LON = ' + center.lng.toFixed(8),
+"M_PER_DEG_LAT = 111320.0",
+"M_PER_DEG_LON = 111320.0 * math.cos(math.radians(CENTER_LAT))",
+'TERRAIN = ' + (terrain ? JSON.stringify(terrain) : 'None'),
+"",
+"LAYER_FILES = {",
+"    \"buildings\": \"buildings.geojson\",",
+"    \"roads\": \"roads.geojson\",",
+"    \"walls\": \"walls.geojson\",",
+"    \"water\": \"water.geojson\",",
+"    \"vegetation\": \"vegetation.geojson\",",
+"    \"lamps\": \"lamps.geojson\",",
+"    \"trees\": \"trees.geojson\",",
+"    \"furniture\": \"furniture.geojson\",",
+"}",
+"",
+"ROAD_WIDTH_BY_CLASS = {",
+"    \"motorway\": 12, \"trunk\": 11, \"primary\": 9, \"secondary\": 8, \"tertiary\": 7,",
+"    \"residential\": 6, \"unclassified\": 6, \"living_street\": 5.5, \"service\": 3.5,",
+"    \"track\": 3, \"footway\": 2, \"path\": 1.5, \"cycleway\": 2, \"pedestrian\": 4, \"steps\": 1.5,",
+"}",
+"",
+"",
+"def project(lon, lat):",
+"    x = (lon - CENTER_LON) * M_PER_DEG_LON",
+"    z = -(lat - CENTER_LAT) * M_PER_DEG_LAT",
+"    return x, z",
+"",
+"",
+"def terrain_offset(lon, lat):",
+"    # bilinear interpolation directly in lat/lon fractional-index space -- exactly equivalent to",
+"    # interpolating in local x/z meters here, since project() is a fixed linear (affine) scale of",
+"    # lon/lat with no rotation, so fractional position along one axis is identical either way.",
+"    if TERRAIN is None:",
+"        return 0.0",
+"    n = TERRAIN[\"gridN\"]",
+"    fi = (lat - TERRAIN[\"minLat\"]) / (TERRAIN[\"maxLat\"] - TERRAIN[\"minLat\"]) * (n - 1)",
+"    fj = (lon - TERRAIN[\"minLon\"]) / (TERRAIN[\"maxLon\"] - TERRAIN[\"minLon\"]) * (n - 1)",
+"    fi = max(0.0, min(n - 1, fi))",
+"    fj = max(0.0, min(n - 1, fj))",
+"    i0, i1 = int(fi), min(n - 1, int(fi) + 1)",
+"    j0, j1 = int(fj), min(n - 1, int(fj) + 1)",
+"    ti, tj = fi - i0, fj - j0",
+"    e = TERRAIN[\"elevations\"]",
+"    e00, e01 = e[i0][j0], e[i0][j1]",
+"    e10, e11 = e[i1][j0], e[i1][j1]",
+"    e0 = e00 * (1 - tj) + e01 * tj",
+"    e1 = e10 * (1 - tj) + e11 * tj",
+"    return (e0 * (1 - ti) + e1 * ti) - TERRAIN[\"refElevation\"]",
+"",
+"",
+"def add_terrain_ground(collection):",
+"    if TERRAIN is None:",
+"        return",
+"    n = TERRAIN[\"gridN\"]",
+"    pts = []",
+"    for i in range(n):",
+"        row = []",
+"        lat = TERRAIN[\"minLat\"] + (TERRAIN[\"maxLat\"] - TERRAIN[\"minLat\"]) * i / (n - 1)",
+"        for j in range(n):",
+"            lon = TERRAIN[\"minLon\"] + (TERRAIN[\"maxLon\"] - TERRAIN[\"minLon\"]) * j / (n - 1)",
+"            x, z = project(lon, lat)",
+"            row.append((x, z, TERRAIN[\"elevations\"][i][j] - TERRAIN[\"refElevation\"] - 0.05))",
+"        pts.append(row)",
+"",
+"    mesh = bpy.data.meshes.new(\"terrain\")",
+"    bm = bmesh.new()",
+"    grid = [[bm.verts.new(p) for p in row] for row in pts]",
+"    for i in range(n - 1):",
+"        for j in range(n - 1):",
+"            try:",
+"                bm.faces.new((grid[i][j], grid[i][j + 1], grid[i + 1][j + 1], grid[i + 1][j]))",
+"            except ValueError:",
+"                pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(\"terrain\", mesh)",
+"    assign_material(obj, (0.08, 0.09, 0.1, 1.0))",
+"    collection.objects.link(obj)",
+"",
+"",
+"def load_fc(path):",
+"    if not os.path.isfile(path):",
+"        return None",
+"    with open(path, \"r\", encoding=\"utf-8\") as f:",
+"        return json.load(f)",
+"",
+"",
+"def ring_to_local(ring):",
+"    pts = [project(c[0], c[1]) for c in ring]",
+"    if len(pts) > 1 and pts[0] == pts[-1]:",
+"        pts = pts[:-1]",
+"    return pts",
+"",
+"",
+"def ring_centroid_lonlat(ring):",
+"    slon = sum(c[0] for c in ring) / len(ring)",
+"    slat = sum(c[1] for c in ring) / len(ring)",
+"    return slon, slat",
+"",
+"",
+"def estimate_road_width(props):",
+"    w = props.get(\"width\")",
+"    if w:",
+"        try:",
+"            wv = float(w)",
+"            if wv > 0:",
+"                return wv",
+"        except (TypeError, ValueError):",
+"            pass",
+"    cls = props.get(\"highway\")",
+"    if cls in ROAD_WIDTH_BY_CLASS:",
+"        return ROAD_WIDTH_BY_CLASS[cls]",
+"    lanes = props.get(\"lanes\")",
+"    if lanes:",
+"        try:",
+"            lv = float(lanes)",
+"            if lv > 0:",
+"                return max(3.0, lv * 3.2)",
+"        except (TypeError, ValueError):",
+"            pass",
+"    return 5.0",
+"",
+"",
+"def unlink_from_all(obj, collection):",
+"    for c in list(obj.users_collection):",
+"        c.objects.unlink(obj)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def hex_to_rgba(hexstr, fallback):",
+"    if not hexstr:",
+"        return fallback",
+"    h = hexstr.strip().lstrip(\"#\")",
+"    if len(h) == 3:",
+"        h = \"\".join(c * 2 for c in h)",
+"    if len(h) != 6:",
+"        return fallback",
+"    try:",
+"        r = int(h[0:2], 16) / 255.0",
+"        g = int(h[2:4], 16) / 255.0",
+"        b = int(h[4:6], 16) / 255.0",
+"        return (r, g, b, 1.0)",
+"    except ValueError:",
+"        return fallback",
+"",
+"",
+"_material_cache = {}",
+"",
+"",
+"def get_material(rgba):",
+"    key = tuple(round(c, 4) for c in rgba)",
+"    mat = _material_cache.get(key)",
+"    if mat is None:",
+"        mat = bpy.data.materials.new(\"mat_%02x%02x%02x\" % (int(rgba[0]*255), int(rgba[1]*255), int(rgba[2]*255)))",
+"        mat.diffuse_color = rgba",
+"        _material_cache[key] = mat",
+"    return mat",
+"",
+"",
+"def assign_material(obj, rgba):",
+"    obj.data.materials.append(get_material(rgba))",
+"",
+"",
+"# --- analytic pitched roofs: OABB-based (gabled/skillion/pyramidal) and general heightfield",
+"# (hipped + any other roof:shape as a generic pitched fallback) -- same methods as the browser",
+"# 3D preview, kept in sync so the .abc export matches it visually.",
+"",
+"def normalize2(v):",
+"    length = math.hypot(v[0], v[1])",
+"    return (v[0] / length, v[1] / length) if length > 1e-9 else (0.0, 0.0)",
+"",
+"",
+"def convex_hull2(points):",
+"    pts = sorted(set(points))",
+"    if len(pts) <= 2:",
+"        return pts",
+"",
+"    def cross(o, a, b):",
+"        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])",
+"",
+"    lower = []",
+"    for p in pts:",
+"        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:",
+"            lower.pop()",
+"        lower.append(p)",
+"    upper = []",
+"    for p in reversed(pts):",
+"        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:",
+"            upper.pop()",
+"        upper.append(p)",
+"    return lower[:-1] + upper[:-1]",
+"",
+"",
+"def compute_oabb(points):",
+"    hull = convex_hull2(points)",
+"    if len(hull) < 2:",
+"        return {\"center\": (0.0, 0.0), \"axis_long\": (1.0, 0.0), \"axis_short\": (0.0, 1.0),",
+"                \"length_long\": 1.0, \"length_short\": 1.0}",
+"    best = None",
+"    n = len(hull)",
+"    for i in range(n):",
+"        a, b = hull[i], hull[(i + 1) % n]",
+"        edge = normalize2((b[0] - a[0], b[1] - a[1]))",
+"        if edge == (0.0, 0.0):",
+"            continue",
+"        perp = (-edge[1], edge[0])",
+"        min_e = min_p = float(\"inf\")",
+"        max_e = max_p = float(\"-inf\")",
+"        for p in hull:",
+"            e = p[0] * edge[0] + p[1] * edge[1]",
+"            pr = p[0] * perp[0] + p[1] * perp[1]",
+"            min_e, max_e = min(min_e, e), max(max_e, e)",
+"            min_p, max_p = min(min_p, pr), max(max_p, pr)",
+"        w, h = max_e - min_e, max_p - min_p",
+"        area = w * h",
+"        if best is None or area < best[\"area\"]:",
+"            c_e, c_p = (min_e + max_e) / 2, (min_p + max_p) / 2",
+"            best = {",
+"                \"area\": area,",
+"                \"center\": (edge[0] * c_e + perp[0] * c_p, edge[1] * c_e + perp[1] * c_p),",
+"                \"edge_dir\": edge, \"perp_dir\": perp, \"edge_len\": w, \"perp_len\": h,",
+"            }",
+"    edge_is_long = best[\"edge_len\"] >= best[\"perp_len\"]",
+"    return {",
+"        \"center\": best[\"center\"],",
+"        \"axis_long\": best[\"edge_dir\"] if edge_is_long else best[\"perp_dir\"],",
+"        \"axis_short\": best[\"perp_dir\"] if edge_is_long else best[\"edge_dir\"],",
+"        \"length_long\": max(best[\"edge_len\"], best[\"perp_len\"]),",
+"        \"length_short\": min(best[\"edge_len\"], best[\"perp_len\"]),",
+"    }",
+"",
+"",
+"def build_oabb_roof(name, outer_pts, wall_top, roof_h, roof_shape, collection, roof_rgba):",
+"    oabb = compute_oabb(outer_pts)",
+"    L = max(oabb[\"length_long\"], 0.5)",
+"    W = max(oabb[\"length_short\"], 0.5)",
+"    ax, ay, c = oabb[\"axis_long\"], oabb[\"axis_short\"], oabb[\"center\"]",
+"    top_z = wall_top + roof_h",
+"",
+"    def pt(s_long, s_short, z):",
+"        return (c[0] + ax[0] * (s_long * L / 2) + ay[0] * (s_short * W / 2),",
+"                c[1] + ax[1] * (s_long * L / 2) + ay[1] * (s_short * W / 2),",
+"                z)",
+"",
+"    w00, w10, w11, w01 = pt(-1, -1, wall_top), pt(1, -1, wall_top), pt(1, 1, wall_top), pt(-1, 1, wall_top)",
+"",
+"    faces_verts = []",
+"    if roof_shape == \"skillion\":",
+"        hi1, hi0 = pt(1, 1, top_z), pt(-1, 1, top_z)",
+"        faces_verts.append((w00, w10, hi1, hi0))",
+"    else:  # gabled",
+"        r0, r1 = pt(-1, 0, top_z), pt(1, 0, top_z)",
+"        faces_verts.append((w00, w10, r1, r0))",
+"        faces_verts.append((r0, r1, w11, w01))",
+"        faces_verts.append((w10, w11, r1))",
+"        faces_verts.append((w01, w00, r0))",
+"",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    for fv in faces_verts:",
+"        verts = [bm.verts.new(p) for p in fv]",
+"        try:",
+"            bm.faces.new(verts)",
+"        except ValueError:",
+"            pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def build_pyramidal_roof(name, outer_pts, wall_top, roof_h, collection, roof_rgba):",
+"    cx = sum(p[0] for p in outer_pts) / len(outer_pts)",
+"    cz = sum(p[1] for p in outer_pts) / len(outer_pts)",
+"    apex = (cx, cz, wall_top + roof_h)",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    apex_v = bm.verts.new(apex)",
+"    ring_v = [bm.verts.new((x, z, wall_top)) for (x, z) in outer_pts]",
+"    n = len(ring_v)",
+"    for i in range(n):",
+"        try:",
+"            bm.faces.new((ring_v[i], ring_v[(i + 1) % n], apex_v))",
+"        except ValueError:",
+"            pass",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def point_seg_dist(px, pz, ax, az, bx, bz):",
+"    dx, dz = bx - ax, bz - az",
+"    len2 = dx * dx + dz * dz",
+"    t = ((px - ax) * dx + (pz - az) * dz) / len2 if len2 > 1e-12 else 0.0",
+"    t = max(0.0, min(1.0, t))",
+"    cx, cz = ax + t * dx, az + t * dz",
+"    return math.hypot(px - cx, pz - cz)",
+"",
+"",
+"def min_dist_to_ring(px, pz, ring):",
+"    n = len(ring)",
+"    return min(point_seg_dist(px, pz, ring[i][0], ring[i][1], ring[(i + 1) % n][0], ring[(i + 1) % n][1])",
+"               for i in range(n))",
+"",
+"",
+"def build_hip_roof_heightfield(name, outer_pts, wall_top, roof_h, collection, roof_rgba):",
+"    # flat n-gon at wall_top, triangulated + subdivided by Blender's own robust bmesh ops (no",
+"    # hand-rolled triangulation needed here, unlike the browser side which uses earcut) --",
+"    # then each vertex is raised by (roof_h / true_max) * distance-to-nearest-footprint-edge,",
+"    # same two-pass normalization as the browser version: sample raw distances first, find the",
+"    # true farthest point actually present in the mesh, THEN scale -- scaling against only a",
+"    # coarse sample (footprint vertices/triangle centroids) can understate the true max and let",
+"    # later, finer points overshoot past wall_top + roof_h.",
+"    mesh = bpy.data.meshes.new(name + \"_roof\")",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, wall_top)) for (x, z) in outer_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"",
+"    bmesh.ops.triangulate(bm, faces=bm.faces[:])",
+"",
+"    max_dim = max(",
+"        max(p[0] for p in outer_pts) - min(p[0] for p in outer_pts),",
+"        max(p[1] for p in outer_pts) - min(p[1] for p in outer_pts),",
+"    )",
+"    cuts = max(0, min(5, round(max_dim / 3.0)))  # ~1.5-3m facets after subdivision, capped",
+"    if cuts > 0:",
+"        bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=cuts, use_grid_fill=True)",
+"",
+"    raw = {}",
+"    true_max = 1e-6",
+"    for v in bm.verts:",
+"        d = min_dist_to_ring(v.co.x, v.co.y, outer_pts)",
+"        raw[v.index] = d",
+"        if d > true_max:",
+"            true_max = d",
+"    scale = roof_h / true_max",
+"    for v in bm.verts:",
+"        v.co.z = wall_top + scale * raw[v.index]",
+"",
+"    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name + \"_roof\", mesh)",
+"    assign_material(obj, roof_rgba)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def cut_hole(obj, hole_pts, z_bottom, z_top, index):",
+"    mesh = bpy.data.meshes.new(obj.name + \"_cutter%d\" % index)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, z_bottom)) for (x, z) in hole_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    ret = bmesh.ops.extrude_face_region(bm, geom=[face])",
+"    extruded = [v for v in ret[\"geom\"] if isinstance(v, bmesh.types.BMVert)]",
+"    bmesh.ops.translate(bm, verts=extruded, vec=(0, 0, z_top - z_bottom))",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    cutter = bpy.data.objects.new(obj.name + \"_cutter%d\" % index, mesh)",
+"    bpy.context.scene.collection.objects.link(cutter)",
+"",
+"    mod = obj.modifiers.new(name=\"hole%d\" % index, type=\"BOOLEAN\")",
+"    mod.operation = \"DIFFERENCE\"",
+"    mod.object = cutter",
+"    bpy.context.view_layer.objects.active = obj",
+"    try:",
+"        bpy.ops.object.modifier_apply(modifier=mod.name)",
+"    except RuntimeError:",
+"        obj.modifiers.remove(mod)",
+"    bpy.data.objects.remove(cutter, do_unlink=True)",
+"",
+"",
+"def add_building(name, feature, collection):",
+"    coords_list = feature[\"geometry\"][\"coordinates\"]",
+"    outer_pts = ring_to_local(coords_list[0])",
+"    if len(outer_pts) < 3:",
+"        return",
+"    hole_rings = [ring_to_local(h) for h in coords_list[1:]]",
+"    hole_rings = [h for h in hole_rings if len(h) >= 3]",
+"",
+"    props = feature[\"properties\"]",
+"    total_h = props.get(\"height_est_m\", 9.0) or 9.0",
+"    roof_h = props.get(\"roof_height_m\", 0.0) or 0.0",
+"    roof_shape = props.get(\"roof_shape\", \"flat\")",
+"    min_h = props.get(\"min_height_m\", 0.0) or 0.0",
+"    wall_h = props.get(\"wall_height_m\", total_h - roof_h - min_h)",
+"    if not wall_h or wall_h < 0.3:",
+"        wall_h = total_h - min_h",
+"",
+"    clon, clat = ring_centroid_lonlat(coords_list[0])",
+"    min_h = min_h + terrain_offset(clon, clat)",
+"    wall_top = min_h + wall_h  # absolute elevation where the roof starts",
+"",
+"    wall_rgba = hex_to_rgba(props.get(\"building:colour\"), (0.55, 0.57, 0.62, 1.0))",
+"",
+"    mesh = bpy.data.meshes.new(name)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, z, min_h)) for (x, z) in outer_pts]",
+"    try:",
+"        face = bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    ret = bmesh.ops.extrude_face_region(bm, geom=[face])",
+"    extruded = [v for v in ret[\"geom\"] if isinstance(v, bmesh.types.BMVert)]",
+"    bmesh.ops.translate(bm, verts=extruded, vec=(0, 0, wall_h))",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name, mesh)",
+"    assign_material(obj, wall_rgba)",
+"    collection.objects.link(obj)",
+"",
+"    for k, hole in enumerate(hole_rings):",
+"        cut_hole(obj, hole, min_h - 5.0, min_h + wall_h + roof_h + 5.0, k)",
+"",
+"    if roof_h > 0.2 and roof_shape and roof_shape != \"flat\":",
+"        roof_rgba = hex_to_rgba(props.get(\"roof:colour\"), tuple(c * 0.75 for c in wall_rgba[:3]) + (1.0,))",
+"        if roof_shape == \"skillion\" or roof_shape == \"gabled\":",
+"            build_oabb_roof(name, outer_pts, wall_top, roof_h, roof_shape, collection, roof_rgba)",
+"        elif roof_shape == \"pyramidal\":",
+"            build_pyramidal_roof(name, outer_pts, wall_top, roof_h, collection, roof_rgba)",
+"        else:",
+"            # hipped, or any exotic roof:shape (mansard/gambrel/dome/...) as a generic fallback",
+"            build_hip_roof_heightfield(name, outer_pts, wall_top, roof_h, collection, roof_rgba)",
+"",
+"",
+"def add_flat_area(name, feature, z, collection):",
+"    ring = feature[\"geometry\"][\"coordinates\"][0]",
+"    pts = ring_to_local(ring)",
+"    if len(pts) < 3:",
+"        return",
+"    clon, clat = ring_centroid_lonlat(ring)",
+"    z = z + terrain_offset(clon, clat)",
+"    mesh = bpy.data.meshes.new(name)",
+"    bm = bmesh.new()",
+"    verts = [bm.verts.new((x, zz, z)) for (x, zz) in pts]",
+"    try:",
+"        bm.faces.new(verts)",
+"    except ValueError:",
+"        bm.free()",
+"        return",
+"    bm.to_mesh(mesh)",
+"    bm.free()",
+"    obj = bpy.data.objects.new(name, mesh)",
+"    collection.objects.link(obj)",
+"",
+"",
+"def add_line_segment(name, p1, p2, width, z_center, height, z_offset, collection):",
+"    x1, z1 = p1",
+"    x2, z2 = p2",
+"    dx, dz = x2 - x1, z2 - z1",
+"    length = math.hypot(dx, dz)",
+"    if length < 0.01:",
+"        return",
+"    angle = math.atan2(dz, dx)",
+"    bpy.ops.mesh.primitive_cube_add(size=1, location=((x1 + x2) / 2, (z1 + z2) / 2, z_center + z_offset))",
+"    obj = bpy.context.active_object",
+"    obj.scale = (length, width, height)",
+"    obj.rotation_euler[2] = angle",
+"    obj.name = name",
+"    unlink_from_all(obj, collection)",
+"",
+"",
+"def add_point_marker(name, x, z, kind, z_offset, collection):",
+"    if kind == \"lamps\":",
+"        bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=4, location=(x, z, 2 + z_offset))",
+"    elif kind == \"trees\":",
+"        bpy.ops.mesh.primitive_cone_add(radius1=1.6, depth=3.5, location=(x, z, 3.25 + z_offset))",
+"    else:",
+"        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(x, z, 0.3 + z_offset))",
+"    obj = bpy.context.active_object",
+"    obj.name = name",
+"    unlink_from_all(obj, collection)",
+"",
+"",
+"collection = bpy.data.collections.new(\"OSM_zone\")",
+"bpy.context.scene.collection.children.link(collection)",
+"",
+"add_terrain_ground(collection)",
+"",
+"for layer_key, filename in LAYER_FILES.items():",
+"    fc = load_fc(os.path.join(FOLDER, filename))",
+"    if not fc:",
+"        continue",
+"    for i, feature in enumerate(fc[\"features\"]):",
+"        gtype = feature[\"geometry\"][\"type\"]",
+"        name = \"%s_%d\" % (layer_key, i)",
+"",
+"        if gtype == \"Polygon\" and layer_key == \"buildings\":",
+"            add_building(name, feature, collection)",
+"",
+"        elif gtype == \"Polygon\" and layer_key in (\"water\", \"vegetation\"):",
+"            add_flat_area(name, feature, 0.02 if layer_key == \"water\" else 0.03, collection)",
+"",
+"        elif gtype == \"LineString\":",
+"            coords = feature[\"geometry\"][\"coordinates\"]",
+"            if layer_key == \"roads\":",
+"                width, height = estimate_road_width(feature[\"properties\"]), 0.15",
+"            elif layer_key == \"walls\":",
+"                width = 0.25",
+"                height = feature[\"properties\"].get(\"wall_height_m\", 1.5) or 1.5",
+"            else:",
+"                width, height = 0.6, 0.15",
+"            z_center = height / 2.0",
+"            for j in range(len(coords) - 1):",
+"                p1 = project(coords[j][0], coords[j][1])",
+"                p2 = project(coords[j + 1][0], coords[j + 1][1])",
+"                mid_lon = (coords[j][0] + coords[j + 1][0]) / 2.0",
+"                mid_lat = (coords[j][1] + coords[j + 1][1]) / 2.0",
+"                z_off = terrain_offset(mid_lon, mid_lat)",
+"                add_line_segment(\"%s_seg%d\" % (name, j), p1, p2, width, z_center, height, z_off, collection)",
+"",
+"        elif gtype == \"Point\":",
+"            lon, lat = feature[\"geometry\"][\"coordinates\"]",
+"            x, z = project(lon, lat)",
+"            z_off = terrain_offset(lon, lat)",
+"            add_point_marker(name, x, z, layer_key, z_off, collection)",
+"",
+"for obj in bpy.context.scene.objects:",
+"    obj.select_set(obj.name in [o.name for o in collection.objects])",
+"",
+"abc_path = os.path.join(FOLDER, \"zone.abc\")",
+"bpy.ops.wm.alembic_export(filepath=abc_path, selected=True, flatten=False)",
+"print(\"Export Alembic termine :\", abc_path)",
+    ].join('\n');
+  }
+
+  restoreZoneFromHash();
+  updateZoneInfo();
+  // no service worker here — this page is already served locally by the Python backend
+  // (server.py), the offline/installable PWA shell from the browser version doesn't apply.
+})();
+</script>
+</body>
+</html>
