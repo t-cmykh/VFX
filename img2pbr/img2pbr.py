@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""img2pbr v1 : une photo -> cartes PBR (heuristiques, sans IA).
+"""img2pbr v2 : une photo -> cartes PBR tileables (diffuse, height, normal, roughness,
+specular, ao), en carre de resolution choisie, avec relief IA optionnel.
 
-Sorties : diffuse, height, normal, roughness, specular, ao (PNG).
-Usage   : python img2pbr.py photo.jpg -o out/ [--normal-strength 4] [--delight 0.8]
+Exemple : python img2pbr.py photo.jpg -o out/ --size 2048
 """
 import argparse
 from pathlib import Path
@@ -10,117 +10,96 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-
-def luminance(rgb):
-    return rgb @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
-
-
-def gap_mask(lum, thresh=None):
-    """Masque des zones tres sombres (joints, trous) : 1 = joint."""
-    if thresh is None:
-        # seuil auto : Otsu sur l'image 8 bits, borne pour ne pas manger le bois sombre
-        otsu, _ = cv2.threshold((lum * 255).astype(np.uint8), 0, 255,
-                                cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        thresh = min(otsu / 255.0 * 0.6, 0.22)
-    m = (lum < thresh).astype(np.float32)
-    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    return m
+import pbr
+from seamless import make_seamless, seam_ratio
 
 
-def masked_blur(img, mask, sigma):
-    """Flou gaussien normalise : ignore les pixels hors masque (mask = poids)."""
-    num = cv2.GaussianBlur(img * mask[..., None] if img.ndim == 3 else img * mask, (0, 0), sigma)
-    den = cv2.GaussianBlur(mask, (0, 0), sigma)
-    if img.ndim == 3:
-        den = den[..., None]
-    return num / np.maximum(den, 1e-4)
-
-
-def delight(rgb, lum, valid, strength, sigma):
-    """Retire l'eclairage basse frequence (reflets, degrades) estime hors joints."""
-    illum = masked_blur(lum, valid, sigma)
-    illum = illum / max(float(illum[valid > 0.5].mean()), 1e-4)
-    gain = illum ** strength
-    return np.clip(rgb / gain[..., None], 0, 1), illum
-
-
-def normal_from_height(h, strength, flip_y=False):
-    gx = cv2.Scharr(h, cv2.CV_32F, 1, 0) / 32.0
-    gy = cv2.Scharr(h, cv2.CV_32F, 0, 1) / 32.0
-    if not flip_y:      # convention OpenGL (Blender) : +Y vers le haut de l'image
-        gy = -gy
-    n = np.dstack([-gx * strength, -gy * strength, np.ones_like(h)])
-    n /= np.linalg.norm(n, axis=2, keepdims=True)
-    return n * 0.5 + 0.5
-
-
-def process(rgb, a):
-    lum = luminance(rgb)
-    gaps = gap_mask(lum)
-    valid = 1.0 - cv2.dilate(gaps, np.ones((5, 5), np.uint8))
-
-    albedo, illum = delight(rgb, lum, valid, a.delight, a.delight_sigma)
-    alum = luminance(albedo)
-
-    # Height : detail du grain (high-pass) + joints creuses + cassures de planches
-    detail = alum - masked_blur(alum, valid, 6)
-    detail = detail / (np.percentile(np.abs(detail[valid > 0.5]), 99) + 1e-6)
-    height = 0.5 + 0.25 * np.clip(detail, -1, 1)
-    gaps_soft = cv2.GaussianBlur(gaps, (0, 0), 1.2)
-    height = height * (1 - gaps_soft) + 0.0 * gaps_soft          # joints = creux
-    height = cv2.GaussianBlur(height, (0, 0), 0.8).astype(np.float32)
-
-    normal = normal_from_height(height, a.normal_strength, a.flip_y)
-
-    # Roughness : bois mat par defaut ; zone luisante (illum haute) = plus lisse ; joints = plus rugueux
-    shine = np.clip((illum - 1.0) / 0.4, 0, 1)
-    rough = a.roughness_base - 0.12 * cv2.GaussianBlur(shine, (0, 0), 15)
-    rough = rough + 0.15 * np.clip(-detail, 0, 1) * 0.5           # creux du grain un peu plus rugueux
-    rough = rough * (1 - gaps_soft) + 0.8 * gaps_soft
-    rough = np.clip(cv2.GaussianBlur(rough.astype(np.float32), (0, 0), 1.0), 0.05, 1.0)
-
-    # Specular : F0 dielectrique ~4 % -> 0.5 dans la convention Principled ; joints plastique pareil
-    spec = np.full_like(height, 0.5)
-
-    # AO : cavites = height local < height flou large
-    ao = 1.0 - np.clip((cv2.GaussianBlur(height, (0, 0), 6) - height) * 3.0, 0, 1)
-    ao = np.clip(ao * (1 - 0.6 * gaps_soft) + 0.0, 0, 1).astype(np.float32)
-
-    return dict(diffuse=albedo, height=height, normal=normal, roughness=rough,
-                specular=spec, ao=ao, _gaps=gaps, _illum=illum)
-
-
-def save(path, img):
+def save(path, img, bit16=False):
     img = np.clip(img, 0, 1)
     if img.ndim == 3:
-        img = img[..., ::-1]                                       # RGB -> BGR pour OpenCV
-    cv2.imwrite(str(path), (img * 255 + 0.5).astype(np.uint8))
+        img = img[..., ::-1]
+    if bit16:
+        cv2.imwrite(str(path), (img * 65535 + 0.5).astype(np.uint16))
+    else:
+        cv2.imwrite(str(path), (img * 255 + 0.5).astype(np.uint8))
+
+
+def parse_offset(s):
+    try:
+        x, y = (float(v) for v in s.split(","))
+    except ValueError:
+        raise argparse.ArgumentTypeError("attendu : x,y avec x et y entre 0 et 1, ex. 0.5,0.5")
+    return x, y
 
 
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("image")
     p.add_argument("-o", "--out", default="out")
-    p.add_argument("--normal-strength", type=float, default=4.0)
-    p.add_argument("--delight", type=float, default=0.9, help="0 = aucun, 1 = complet")
-    p.add_argument("--delight-sigma", type=float, default=25)
-    p.add_argument("--roughness-base", type=float, default=0.6)
-    p.add_argument("--flip-y", action="store_true", help="normal DirectX au lieu d'OpenGL")
+    g = p.add_argument_group("resolution / recadrage")
+    g.add_argument("--size", type=int, default=1024, help="cote du carre de sortie (256..8192)")
+    g.add_argument("--crop-scale", type=float, default=1.0,
+                   help="fraction du petit cote retenue (1 = carre maximal, 0.5 = zoom x2)")
+    g.add_argument("--crop-offset", type=parse_offset, default=(0.5, 0.5),
+                   help="position du carre dans l'image, x,y entre 0 et 1")
+    g = p.add_argument_group("seamless")
+    g.add_argument("--no-seamless", action="store_true")
+    g.add_argument("--seam-band", type=float, default=0.35,
+                   help="largeur de la zone de fondu (0.05..0.5) ; plus grand = couture plus douce "
+                        "mais plus de flou")
+    g = p.add_argument_group("IA")
+    g.add_argument("--ai", choices=["off", "midas"], default="midas",
+                   help="relief par MiDaS (telecharge ~66 Mo au 1er usage)")
+    g.add_argument("--ai-strength", type=float, default=0.3, help="part du relief IA (0..1)")
+    g.add_argument("--model-path", default=None)
+    g = p.add_argument_group("cartes")
+    g.add_argument("--normal-strength", type=float, default=4.0)
+    g.add_argument("--delight", type=float, default=0.9, help="0 = aucun, 1 = complet")
+    g.add_argument("--delight-sigma", type=float, default=25, help="en px a 1024")
+    g.add_argument("--roughness-base", type=float, default=0.6)
+    g.add_argument("--flip-y", action="store_true", help="normal DirectX au lieu d'OpenGL")
+    g.add_argument("--bit16", action="store_true", help="height et normal en PNG 16 bits")
+    g.add_argument("--preview", action="store_true", help="ecrit un apercu en pavage 3x3")
     a = p.parse_args()
 
+    if not 256 <= a.size <= 8192:
+        raise SystemExit("--size doit etre entre 256 et 8192")
     bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
     if bgr is None:
         raise SystemExit(f"image illisible : {a.image}")
     rgb = bgr[..., ::-1].astype(np.float32) / 255.0
-    maps = process(rgb, a)
+
+    sq = pbr.to_square(rgb, a.size, a.crop_scale, a.crop_offset)
+    if min(rgb.shape[:2]) * a.crop_scale < a.size:
+        print(f"attention : la source ({int(min(rgb.shape[:2]) * a.crop_scale)} px) est plus "
+              f"petite que --size {a.size} : suréchantillonnage, pas de detail en plus")
+    before = seam_ratio(sq)
+    if not a.no_seamless:
+        sq = make_seamless(sq, a.seam_band)
+
+    detail = None
+    if a.ai == "midas":
+        import ai
+        model = ai.Midas(a.model_path or ai.DEFAULT_MODEL)
+        detail = ai.ai_detail(sq, model, blur_fn=pbr.blur)
+
+    maps = pbr.build_maps(sq, a, detail)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = Path(a.image).stem
     for k, v in maps.items():
-        if not k.startswith("_"):
-            save(out / f"{stem}_{k}.png", v)
-    print("ecrit :", ", ".join(k for k in maps if not k.startswith("_")), "->", out)
+        save(out / f"{stem}_{k}.png", v, a.bit16 and k in ("height", "normal"))
+    print(f"{a.size}x{a.size} -> {out}  ({', '.join(maps)})")
+    print(f"couture (<= 1 invisible) : photo {before:.1f}  ->  diffuse {seam_ratio(maps['diffuse']):.1f}"
+          f", normal {seam_ratio(maps['normal']):.1f}")
+
+    if a.preview:
+        d = np.clip(maps["diffuse"], 0, 1)
+        tiled = np.tile(d, (3, 3, 1))
+        save(out / f"{stem}_preview_tiles.jpg", cv2.resize(tiled, (1536, 1536),
+                                                            interpolation=cv2.INTER_AREA))
 
 
 if __name__ == "__main__":
