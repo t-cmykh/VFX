@@ -1,0 +1,54 @@
+QuadriFlow sur 48 objets : 24 reussis, 24 echecs/inchanges (26s)
+objet                       avant  cible  apres  statut
+Portal_Frame                  112   4705   4464  ok
+Portal_Legs                   488    284    297  ok
+Bogie_Hazard_Plates           216   1315   1336  ok
+Bogie_Wheel_Boxes             216    751    760  ok
+Bogie_Wheels                 1184   1288   1184  saute : 16 pieces separees (tubes / rails / echelles)
+Hazard_Stripes                108    143    108  saute : 18 pieces separees (tubes / rails / echelles)
+Name_Plate                     26    120    106  ok
+Cable_Reel_Drum               242    225    217  ok
+Cable_Reel_Hub                324    121    115  ok
+Cable_Reel_Spokes            1984    241   1984  saute : 256 pieces separees (tubes / rails / echelles)
+Cable_Reel_Support             30    120     30  saute : piece de type tube / barre / axe (nom)
+Pedestal                      590   2553   2509  ok
+White_Panel                    26    120    128  ok
+Pedestal_Ledge                 78    256    236  ok
+Pedestal_Stair                260    120    260  saute : 10 pieces separees (tubes / rails / echelles)
+Pedestal_Rails_Ladder        1720    306   1720  saute : 215 pieces separees (tubes / rails / echelles)
+Slew_Deck                     814   2348    814  saute : 13 pieces separees (tubes / rails / echelles)
+Slew_Bearing                  966   2534   2365  ok
+Machinery_House               758   3667    758  echec : maillage non manifold
+House_Skirt                    59   2153   2222  ok
+House_White_Paint             120    129    120  saute : 20 pieces separees (tubes / rails / echelles)
+House_Glass                    24    120     24  rejete : deforme (surface x0.68)
+Roof_Hump                     105    849    853  ok
+Roof_Deck_Board                52   1174   1066  ok
+Roof_Braces                    20    120     20  saute : piece de type tube / barre / axe (nom)
+Roof_Rail                     104    125    104  saute : 13 pieces separees (tubes / rails / echelles)
+Counterweight                1352    751    685  ok
+Counterweight_Base            108    373    355  ok
+Operator_Cab                  532    415    532  echec : maillage non manifold
+Cab_Roof                       54    184    176  ok
+Cab_Glass                      48    120     48  saute : 8 pieces separees (tubes / rails / echelles)
+Strut_Main                    114   1154   1070  ok
+Apex_Node                     146    369    351  ok
+Balance_Arm                   226   1253   1328  ok
+Jib_Main                       98    664    623  ok
+Jib_Pendant                   104    120    104  saute : piece de type tube / barre / axe (nom)
+Jib_Tip_Fork                  162    362    390  ok
+Jib_Sheaves                   148    120    148  saute : piece de type tube / barre / axe (nom)
+Hoist_Ropes                    20    120     20  saute : piece de type tube / barre / axe (nom)
+Hook_Block                    286    120    286  saute : piece de type tube / barre / axe (nom)
+Hook                           90    120     90  saute : 9 pieces separees (tubes / rails / echelles)
+Pivot_Pins                    488    301    488  saute : piece de type tube / barre / axe (nom)
+Strut_Ladder                  296    164    296  saute : 37 pieces separees (tubes / rails / echelles)
+Balance_Walkway               138   1017   1004  ok
+Balance_Rails                 736    165    736  saute : 92 pieces separees (tubes / rails / echelles)
+Jib_Walkway                    98    529    452  ok
+Jib_Rails                     656    143    656  saute : 82 pieces separees (tubes / rails / echelles)
+Balance_Stays                  32    120     32  saute : piece de type tube / barre / axe (nom)
+
+Second essai (nettoyage : fusion des doublons + normales + trous) :
+  Machinery_House        758 ->  3689  non-manifold 0->0 aretes ; OK
+  Operator_Cab           532 ->   849  non-manifold 0->0 aretes ; OK
