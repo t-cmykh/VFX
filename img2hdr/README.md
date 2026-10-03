@@ -17,6 +17,23 @@ Photo JPG/PNG -> **pseudo-HDRI** equirectangulaire (2:1) en **EXR ACEScg**, pour
    haut, sol en bas), le tout x `--fill`.
 5. **EXR** 16 bits (ou `--float32`), `envmap=latlong`, `colorInteropID=lin_ap1_scene` + `chromaticities` AP1.
 
+## Inventer le 360 complet avec une IA (machine GPU)
+`pano_outpaint.py` genere les parties manquantes de la sphere avec un modele d'inpainting (diffusers) :
+
+    pip install -r requirements-gpu.txt          # torch selon ta version de CUDA
+    python pano_outpaint.py studio.jpg -o pano/ --hfov 69 --prompt "..."
+    python img2hdr.py studio.jpg -o out/ --pano pano/studio_pano.png
+
+- Anneaux d'outpainting successifs autour de la photo, puis passe decalee de 180 deg pour la couture.
+- Generation en basse resolution (`--gen-width 1024`) ; la photo d'origine est recollee a pleine resolution.
+- Modele par defaut `diffusers/stable-diffusion-xl-1.0-inpainting-0.1` (`--model` pour en changer,
+  `--lora` pour un LoRA panorama 360). `--low-vram` si < 12 Go. `--dry-run` : geometrie seule.
+- **Non teste avec un vrai modele** (pas de GPU ni d'acces Hugging Face dans l'environnement de dev) :
+  la geometrie/masques (`test_pano.py`) et l'integration EXR/Blender (`--pano`) sont testes, pas la
+  qualite de la generation. Les noms de depots Hugging Face sont a verifier de ton cote.
+- Limites : les poles (plafond/sol) sont deformes en equirect et mal geres par ces modeles ; la
+  position des lampes inventees est arbitraire ; le modele peut ajouter des objets.
+
 ## Verifications faites
 - Blender (OCIO, espace `ACEScg`) relit l'EXR et retombe sur ma conversion a ~1e-8 pres.
 - Rendu Cycles : scene d'essai eclairee par la HDRI vs la meme photo sans expansion

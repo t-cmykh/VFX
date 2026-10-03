@@ -1,0 +1,11 @@
+# pour pano_outpaint.py (machine avec GPU NVIDIA, >= 12 Go de VRAM conseilles, sinon --low-vram)
+# installer torch selon ta version de CUDA : https://pytorch.org/get-started/locally/
+torch
+diffusers>=0.30
+transformers
+accelerate
+safetensors
+numpy
+opencv-python-headless
+pillow
+OpenEXR

@@ -50,6 +50,9 @@ def main():
     g.add_argument("--feather", type=float, default=4.0, help="fondu photo -> extension (degres)")
     g.add_argument("--fill", type=float, default=0.7,
                    help="gain de l'extension hors photo (0 = noir)")
+    g.add_argument("--pano", default=None,
+                   help="panorama 360 deja complete (sortie de pano_outpaint.py) : remplace "
+                        "l'extension automatique ; l'expansion de dynamique s'applique a tout")
     g = p.add_argument_group("dynamique")
     g.add_argument("--peak", type=float, default=40.0,
                    help="gain des sources ecretees (1 = aucune expansion)")
@@ -66,10 +69,21 @@ def main():
     enc = bgr[..., ::-1].astype(np.float32) / 255.0
     lin = cs.srgb_decode(enc)
 
-    hdr_lin, em = hdr.expand_highlights(enc, lin, a.peak, a.shoulder, a.exposure)
-    ldr_lin = lin * 2.0 ** a.exposure
-    env, w = hdr.build_env(ldr_lin, hdr_lin, a.hfov, a.width, a.yaw, a.pitch, a.roll,
-                           a.fill, a.feather)
+    if a.pano:
+        pbgr = cv2.imread(a.pano, cv2.IMREAD_COLOR)
+        if pbgr is None:
+            raise SystemExit(f"panorama illisible : {a.pano}")
+        if pbgr.shape[1] != 2 * pbgr.shape[0]:
+            raise SystemExit("le panorama doit etre equirectangulaire 2:1")
+        penc = cv2.resize(pbgr[..., ::-1].astype(np.float32) / 255.0, (a.width, a.width // 2),
+                          interpolation=cv2.INTER_AREA if pbgr.shape[1] > a.width else cv2.INTER_CUBIC)
+        env, em = hdr.expand_highlights(penc, cs.srgb_decode(penc), a.peak, a.shoulder, a.exposure)
+        _, w = hdr.project(enc, a.hfov, a.width, a.yaw, a.pitch, a.roll, a.feather)
+    else:
+        hdr_lin, em = hdr.expand_highlights(enc, lin, a.peak, a.shoulder, a.exposure)
+        ldr_lin = lin * 2.0 ** a.exposure
+        env, w = hdr.build_env(ldr_lin, hdr_lin, a.hfov, a.width, a.yaw, a.pitch, a.roll,
+                               a.fill, a.feather)
 
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -82,8 +96,10 @@ def main():
     pos = y[y > 1e-4]
     print(f"{exr}  {env.shape[1]}x{env.shape[0]}  EXR {'32' if a.float32 else '16'} bits, "
           f"ACEScg (lin_ap1_scene)")
-    print(f"sources ecretees detectees : {(em > 0.5).mean() * 100:.2f} % des pixels de la photo")
-    print(f"couverture photo : {w.mean() * 100:.1f} % de la sphere ; le reste est extrapole")
+    print(f"sources ecretees detectees : {(em > 0.5).mean() * 100:.2f} % des pixels "
+          f"{'du panorama' if a.pano else 'de la photo'}")
+    print(f"couverture photo : {w.mean() * 100:.1f} % de la sphere ; le reste "
+          f"{'vient du panorama fourni (genere)' if a.pano else 'est extrapole'}")
     print(f"luminance : mediane {np.median(pos):.3f}  max {y.max():.1f}  "
           f"plage ~ {np.log2(y.max() / np.percentile(pos, 1)):.1f} stops")
     print("principales sources (part de l'energie, azimut, elevation, pic) :")
