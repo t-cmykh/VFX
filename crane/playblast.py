@@ -30,6 +30,7 @@ def run(sc, L, here, res=640):
     for p in paths: os.remove(p)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(here, f"crane_stage{L}.blend"))
     print("playblast ->", os.path.join(out, f"stage{L}_sheet.png"))
+    if L >= 5: match(sc, L, here)
     if L >= 3: closeups(sc, L, here)
 
 
@@ -60,3 +61,37 @@ def closeups(sc, L, here, res=520):
             W.paste(im, (i * res, r * res)); d.rectangle((i * res, r * res, i * res + 170, r * res + 16), fill=(0, 0, 0))
             d.text((i * res + 4, r * res + 2), views[i][0] + (" - topo" if r else " - shaded"), fill=(255, 255, 255))
     W.save(os.path.join(out, f"stage{L}_closeups.png"))
+
+
+ZONES = [("1 contrepoids / contre-fleche", (30, 100, 250, 280)), ("2 fleche / apex", (220, 0, 520, 300)),
+         ("3 cabine / genou du mat", (200, 200, 380, 390)), ("4 base / touret / bogies", (30, 370, 400, 550))]
+
+def match(sc, L, here):
+    """Rendu ORTHO cale pixel pour pixel sur reference.jpg (550 px = 550*S m) : comparaison + superposition par zone."""
+    out = os.path.join(here, "playblast"); R = 1100
+    for ob in sc.objects:
+        if ob.type == 'MESH' and ob.name in ("Ground", "Rails", "Ground_Grid_5m", "Human_1m75"): ob.hide_render = True
+    cam = make_cam("c_match", ((275 - OX) * S, -120, (GZ - 275) * S), ((275 - OX) * S, 0, (GZ - 275) * S), ortho=550 * S)
+    sc.render.resolution_x = sc.render.resolution_y = R
+    sc.world.color = (0.80, 0.86, 0.93)
+    p = os.path.join(out, "_m.png"); render_to(sc, cam, p)
+    m = Image.open(p).convert("RGB"); os.remove(p)
+    ref = Image.open(os.path.join(here, "reference.jpg")).convert("RGB").resize((R, R), Image.LANCZOS)
+    # fond ciel : masque de silhouette du modele (pixels differents du fond)
+    import numpy as np
+    ma = np.asarray(m).astype(int); bg = np.array([int(255 * (c ** (1 / 2.2))) for c in (0.80, 0.86, 0.93)])
+    sil = (np.abs(ma - bg).sum(2) > 24)
+    ov = np.asarray(ref).copy(); edge = sil ^ np.roll(sil, 1, 0) | sil ^ np.roll(sil, 1, 1)
+    ov[edge] = (0, 255, 255)
+    Image.fromarray(ov).save(os.path.join(out, f"stage{L}_overlay_full.png"))
+    cell = 520; rows = []
+    for name, (x0, y0, x1, y1) in ZONES:
+        box = tuple(int(v * 2) for v in (x0, y0, x1, y1)); ims = []
+        for im in (ref, m, Image.fromarray(ov)):
+            cr = im.crop(box); k = cell / max(cr.width, cr.height); ims.append(cr.resize((int(cr.width * k), int(cr.height * k)), Image.LANCZOS))
+        rows.append((name, ims))
+    H = sum(r[1][0].height for r in rows); W = Image.new("RGB", (cell * 3, H)); d = ImageDraw.Draw(W); y = 0
+    for name, ims in rows:
+        for c, im in enumerate(ims): W.paste(im, (c * cell, y))
+        d.rectangle((0, y, 330, y + 16), fill=(0, 0, 0)); d.text((4, y + 2), "ZONE " + name + "   [photo | modele | contour superpose]", fill=(255, 255, 255)); y += ims[0].height
+    W.save(os.path.join(out, f"stage{L}_zones.png"))

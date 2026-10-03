@@ -306,9 +306,9 @@ class Crane:
         return self
 
 GROUPS = [("01_Portal", ("Portal", "Bogie", "Cable_Reel", "Hazard", "Name_Plate")),
-          ("02_Pedestal", ("Pedestal", "Slew_", "Deck_")),
-          ("03_Slewing_House", ("Machinery", "House_", "Operator", "Cab_", "Counterweight")),
-          ("04_Linkage", ("Strut", "Balance", "Jib", "Pivot", "Hoist", "Hook"))]
+          ("02_Pedestal", ("Pedestal", "Slew_", "Deck_", "White_Panel")),
+          ("03_Slewing_House", ("Machinery", "House_", "Operator", "Cab_", "Counterweight", "Roof_")),
+          ("04_Linkage", ("Strut", "Balance", "Jib", "Pivot", "Hoist", "Hook", "Apex"))]
 
 def finalize(cr):
     """Etape 4 : collections par assemblage, UV, marquage final."""
@@ -330,7 +330,10 @@ def build(L):
     sc = reset_scene()
     ref = collection("REF"); cr = collection("CRANE")
     build_ground(ref); build_human(ref, (11.0, -6.5, 0.0))
-    Crane(L, cr).build()
+    if L >= 5:
+        from crane_refine import Crane2
+        Crane2(L, cr).build()
+    else: Crane(L, cr).build()
     if L >= 4: finalize(cr)
     return sc
 
