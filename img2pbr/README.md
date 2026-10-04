@@ -16,10 +16,39 @@ Photo -> cartes PBR tileables : diffuse, height, normal (OpenGL), roughness, spe
 
 Le programme affiche un score de couture (<= 1 : invisible) ; `--preview` ecrit un pavage 3x3.
 
+## Export : PNG ou EXR, et USD
+| Option | Effet |
+|---|---|
+| `--format png` (defaut) | PNG ; la diffuse est en **Rec.709 (sRGB)** |
+| `--format exr` | EXR 16 bits (`--exr-float32` : 32) ; la diffuse est en **ACEScg** (`lin_ap1_scene`) |
+| `--usd [both\|mtlx\|preview]` | ecrit `<nom>_material.usda` : un Material branche sur les cartes |
+| `--disp-scale` | amplitude du displacement dans l'USD (0.01 par defaut, unites de la scene) |
+
+    pip install OpenEXR usd-core        # seulement si tu utilises --format exr / --usd
+    python img2pbr.py photo.jpg -o out/ --size 2048 --format exr --usd
+
+- **Seule la diffuse est une couleur** et change d'espace. `height`, `normal`, `roughness`, `specular`,
+  `ao` sont des *donnees* : jamais converties, ecrites telles quelles (EXR : canal `Y`, ou `RGB` pour la
+  normal, sans etiquette de primaires). La normal reste encodee [0,1], comme dans le PNG.
+- **USD** : `mtlx` = MaterialX `standard_surface` (+ `normalmap`, `displacement`), `preview` =
+  UsdPreviewSurface, `both` (defaut) met les deux sur le meme Material (le moteur prend celui qu'il
+  comprend). Un plan 1x1 avec UV est ajoute pour voir le resultat dans usdview. Chemins de textures
+  relatifs : garde le `.usda` dans le dossier des cartes. Le displacement vaut `(height - 0.5) * echelle`.
+- Branchements : diffuse -> base color, roughness, normal (tangent space, OpenGL : incompatible avec
+  `--flip-y`), height -> displacement ; `ao` seulement dans UsdPreviewSurface (standard_surface n'a pas
+  d'entree AO). `specular` n'est pas branchee (carte constante, deja la valeur par defaut).
+- **Verifie** : PNG inchange par rapport a avant ; EXR relus (valeurs = PNG a la quantification 8 bits
+  pres, diffuse = conversion ACEScg attendue, etiquette ACEScg sur la diffuse seulement) ; USD relu avec
+  `pxr`, textures resolues, noeuds/entrees/types MaterialX compares aux definitions officielles de la
+  bibliotheque MaterialX 1.39. **Non verifie** : un vrai rendu (Houdini/Karma, Blender, usdview, Omniverse...)
+  - je n'ai pas de moteur ici. Les noms d'espaces couleur (`srgb_texture`, `acescg`) doivent exister dans
+  ta config OCIO. En EXR, le reseau UsdPreviewSurface lit la diffuse comme "raw" (valeurs ACEScg vues comme
+  Rec.709) : preferer le reseau MaterialX avec des EXR.
+
 ## Fenetre
     python img2pbr_gui.py        # ou double-clic sur lancer_img2pbr.bat (Windows)
 
-Choix de la photo, du dossier et de la taille (512 a 8192), reglages de recadrage / pavage / normal /
+Choix de la photo, du dossier, de la taille (512 a 8192), du format (PNG Rec.709 / EXR ACEScg) et de l'export USD, reglages de recadrage / pavage / normal /
 de-eclairage / relief IA, journal, et visualisation de chaque carte generee (ou de l'apercu 3x3).
 Tkinter est fourni avec Python sur Windows (Linux : `apt install python3-tk`). Pour l'apercu :
 `pip install pillow`. Teste sous Xvfb avec `--ai off` ; le relief MiDaS (telechargement) n'a pas ete

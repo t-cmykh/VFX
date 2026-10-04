@@ -12,9 +12,12 @@ from argparse import Namespace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import export
 from img2pbr import generate
 
 IMAGE_TYPES = [("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"), ("Tous", "*.*")]
+USD_CHOICES = ["Pas d'USD", "MaterialX + UsdPreviewSurface", "MaterialX seul", "UsdPreviewSurface seul"]
+USD_MODES = [None, "both", "mtlx", "preview"]
 SIZES = ["512", "1024", "2048", "4096", "8192"]
 MAPS = ["diffuse", "height", "normal", "roughness", "specular", "ao", "apercu pavage 3x3"]
 
@@ -44,6 +47,7 @@ class App(ttk.Frame):
         self.busy = False
         self.photo = None
         self.result = None   # (dossier, stem)
+        self.fmt = "png"
 
         self.v = {
             "image": tk.StringVar(), "out": tk.StringVar(value=str(Path.cwd() / "out")),
@@ -54,7 +58,9 @@ class App(ttk.Frame):
             "delight": tk.StringVar(value="0.9"), "roughness_base": tk.StringVar(value="0.6"),
             "seamless": tk.BooleanVar(value=True), "ai": tk.BooleanVar(value=True),
             "bit16": tk.BooleanVar(), "flip_y": tk.BooleanVar(), "preview": tk.BooleanVar(value=True),
-            "show": tk.StringVar(value="diffuse"),
+            "show": tk.StringVar(value="diffuse"), "format": tk.StringVar(value="png"),
+            "exr32": tk.BooleanVar(), "usd": tk.StringVar(value=USD_CHOICES[0]),
+            "disp_scale": tk.StringVar(value="0.01"),
         }
         r = 0
         ttk.Label(self, text="Photo").grid(row=r, column=0, sticky="w")
@@ -70,6 +76,24 @@ class App(ttk.Frame):
         box.grid(row=r, column=1, sticky="w", padx=4)
         for s in SIZES:
             ttk.Radiobutton(box, text=s, value=s, variable=self.v["size"]).pack(side="left", padx=(0, 10))
+        r += 1
+
+        ttk.Label(self, text="Format des cartes").grid(row=r, column=0, sticky="w")
+        box = ttk.Frame(self)
+        box.grid(row=r, column=1, columnspan=2, sticky="w", padx=4)
+        ttk.Radiobutton(box, text="PNG  (diffuse Rec.709 / sRGB)", value="png",
+                        variable=self.v["format"]).pack(side="left", padx=(0, 12))
+        ttk.Radiobutton(box, text="EXR  (diffuse ACEScg)", value="exr",
+                        variable=self.v["format"]).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(box, text="EXR 32 bits", variable=self.v["exr32"]).pack(side="left")
+        r += 1
+        ttk.Label(self, text="Export USD").grid(row=r, column=0, sticky="w", pady=4)
+        box = ttk.Frame(self)
+        box.grid(row=r, column=1, columnspan=2, sticky="w", padx=4)
+        ttk.Combobox(box, values=USD_CHOICES, textvariable=self.v["usd"], state="readonly",
+                     width=32).pack(side="left")
+        ttk.Label(box, text="  Displacement (echelle)").pack(side="left")
+        ttk.Entry(box, textvariable=self.v["disp_scale"], width=7).pack(side="left", padx=4)
         r += 1
 
         adv = ttk.LabelFrame(self, text="Reglages", padding=6)
@@ -141,7 +165,8 @@ class App(ttk.Frame):
             ai="midas" if v["ai"].get() else "off", ai_strength=f("ai_strength"), model_path=None,
             normal_strength=f("normal_strength"), delight=f("delight"), delight_sigma=25,
             roughness_base=f("roughness_base"), flip_y=v["flip_y"].get(), bit16=v["bit16"].get(),
-            preview=v["preview"].get())
+            preview=v["preview"].get(), format=v["format"].get(), exr_float32=v["exr32"].get(),
+            usd=USD_MODES[USD_CHOICES.index(v["usd"].get())], disp_scale=f("disp_scale"))
 
     def start(self):
         if self.busy:
@@ -152,6 +177,7 @@ class App(ttk.Frame):
             messagebox.showerror("Reglage invalide", f"Valeur non numerique ou image absente.\n{e}")
             return
         self.busy = True
+        self.fmt = a.format
         self.btn.configure(state="disabled")
         self.bar.start(12)
         self.say(f"\n--- {Path(a.image).name}  {a.size}x{a.size} ---\n")
@@ -190,11 +216,18 @@ class App(ttk.Frame):
             return
         out, stem = self.result
         name = self.v["show"].get()
-        path = out / (f"{stem}_preview_tiles.jpg" if name.startswith("apercu")
-                      else f"{stem}_{name}.png")
+        if name.startswith("apercu"):
+            path = out / f"{stem}_preview_tiles.jpg"
+        else:
+            path = out / f"{stem}_{name}.{self.fmt}"
+            if not path.exists():
+                path = path.with_suffix(".png" if self.fmt == "exr" else ".exr")
         try:
             from PIL import Image, ImageTk
-            im = Image.open(path)
+            if path.suffix == ".exr":
+                im = Image.fromarray(export.exr_to_display(path, name in export.COLOR_MAPS))
+            else:
+                im = Image.open(path)
             im.thumbnail((420, 420))
             self.photo = ImageTk.PhotoImage(im)
             self.preview.configure(image=self.photo, text="")

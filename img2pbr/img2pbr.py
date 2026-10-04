@@ -10,18 +10,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+import export
 import pbr
+import usd
 from seamless import make_seamless, seam_ratio
-
-
-def save(path, img, bit16=False):
-    img = np.clip(img, 0, 1)
-    if img.ndim == 3:
-        img = img[..., ::-1]
-    if bit16:
-        cv2.imwrite(str(path), (img * 65535 + 0.5).astype(np.uint16))
-    else:
-        cv2.imwrite(str(path), (img * 255 + 0.5).astype(np.uint8))
 
 
 def parse_offset(s):
@@ -37,6 +29,10 @@ def generate(a):
     Retourne (dossier, apercu ou None). Les messages passent par print()."""
     if not 256 <= a.size <= 8192:
         raise ValueError("size doit etre entre 256 et 8192")
+    if a.usd:
+        usd.check_available()
+        if a.flip_y:
+            raise ValueError("USD attend une normal OpenGL : decoche 'Normal DirectX' (--flip-y)")
     bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
     if bgr is None:
         raise ValueError(f"image illisible : {a.image}")
@@ -61,10 +57,10 @@ def generate(a):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = Path(a.image).stem
-    for k, v in maps.items():
-        save(out / f"{stem}_{k}.png", v, a.bit16 and k in ("height", "normal"))
+    files = export.write_maps(maps, out, stem, a.format, a.bit16, not a.exr_float32)
     preview = None
-    print(f"{a.size}x{a.size} -> {out}  ({', '.join(maps)})")
+    print(f"{a.size}x{a.size} -> {out}  ({', '.join(maps)})  "
+          f"{'PNG Rec.709' if a.format == 'png' else 'EXR ACEScg'}")
     print(f"couture (<= 1 invisible) : photo {before:.1f}  ->  diffuse {seam_ratio(maps['diffuse']):.1f}"
           f", normal {seam_ratio(maps['normal']):.1f}")
 
@@ -72,7 +68,10 @@ def generate(a):
         d = np.clip(maps["diffuse"], 0, 1)
         tiled = np.tile(d, (3, 3, 1))
         preview = out / f"{stem}_preview_tiles.jpg"
-        save(preview, cv2.resize(tiled, (1536, 1536), interpolation=cv2.INTER_AREA))
+        export.save_png(preview, cv2.resize(tiled, (1536, 1536), interpolation=cv2.INTER_AREA))
+    if a.usd:
+        u = usd.write_usd(out / f"{stem}_material.usda", stem, files, a.format, a.usd, a.disp_scale)
+        print(f"USD ({a.usd}) -> {u}")
     return out, preview
 
 
@@ -98,6 +97,16 @@ def main():
                    help="relief par MiDaS (telecharge ~66 Mo au 1er usage)")
     g.add_argument("--ai-strength", type=float, default=0.3, help="part du relief IA (0..1)")
     g.add_argument("--model-path", default=None)
+    g = p.add_argument_group("export")
+    g.add_argument("--format", choices=export.FORMATS, default="png",
+                   help="png : diffuse Rec.709 (sRGB) | exr : diffuse ACEScg ; les autres cartes "
+                        "sont des donnees et ne sont jamais converties")
+    g.add_argument("--exr-float32", action="store_true", help="EXR 32 bits (defaut : 16 bits)")
+    g.add_argument("--usd", nargs="?", const="both", choices=usd.MODES, default=None,
+                   help="ecrit <nom>_material.usda branche sur les cartes : mtlx (MaterialX "
+                        "standard_surface), preview (UsdPreviewSurface) ou both (defaut si sans valeur)")
+    g.add_argument("--disp-scale", type=float, default=0.01,
+                   help="amplitude du displacement dans l'USD, en unites de la scene")
     g = p.add_argument_group("cartes")
     g.add_argument("--normal-strength", type=float, default=4.0)
     g.add_argument("--delight", type=float, default=0.9, help="0 = aucun, 1 = complet")
