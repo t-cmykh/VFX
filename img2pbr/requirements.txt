@@ -1,0 +1,5 @@
+numpy
+opencv-python-headless
+onnxruntime        # relief IA (--ai midas), optionnel
+OpenEXR>=3.3       # export EXR
+usd-core           # export USD (--usd)
