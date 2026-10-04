@@ -45,6 +45,15 @@ Le programme affiche un score de couture (<= 1 : invisible) ; `--preview` ecrit 
   ta config OCIO. En EXR, le reseau UsdPreviewSurface lit la diffuse comme "raw" (valeurs ACEScg vues comme
   Rec.709) : preferer le reseau MaterialX avec des EXR.
 
+### Test dans Blender
+    pip install bpy                      # Python 3.11, ~300 Mo
+    python blender_usd_test.py out/parquet_material.usda rendu.png --samples 64
+
+Importe le `.usda`, l'applique a une sphere lisse et rend avec Cycles. Blender n'importe que le reseau
+UsdPreviewSurface (pas le MaterialX), et ignore `ao` et le displacement : c'est un controle des cartes,
+du sens de la normal et des espaces couleur, pas du reseau MaterialX. Avec `--format exr`, la diffuse
+parait desaturee (ACEScg lue comme Rec.709 par le reseau de secours) : attendu, cf. plus haut.
+
 ## Fenetre
     python img2pbr_gui.py        # ou double-clic sur lancer_img2pbr.bat (Windows)
 
