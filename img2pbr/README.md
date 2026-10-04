@@ -16,6 +16,15 @@ Photo -> cartes PBR tileables : diffuse, height, normal (OpenGL), roughness, spe
 
 Le programme affiche un score de couture (<= 1 : invisible) ; `--preview` ecrit un pavage 3x3.
 
+## Fenetre
+    python img2pbr_gui.py        # ou double-clic sur lancer_img2pbr.bat (Windows)
+
+Choix de la photo, du dossier et de la taille (512 a 8192), reglages de recadrage / pavage / normal /
+de-eclairage / relief IA, journal, et visualisation de chaque carte generee (ou de l'apercu 3x3).
+Tkinter est fourni avec Python sur Windows (Linux : `apt install python3-tk`). Pour l'apercu :
+`pip install pillow`. Teste sous Xvfb avec `--ai off` ; le relief MiDaS (telechargement) n'a pas ete
+relance depuis la fenetre.
+
 ## Limites connues
 - Le reflet d'une photo est desature, pas seulement plus clair : le de-eclairage le reduit sans l'effacer.
 - Le fondu de pavage melange deux copies decalees : les motifs tres structures peuvent se doubler.

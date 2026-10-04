@@ -32,6 +32,51 @@ def parse_offset(s):
     return x, y
 
 
+def generate(a):
+    """Pipeline complet. `a` : Namespace (memes champs que la ligne de commande).
+    Retourne (dossier, apercu ou None). Les messages passent par print()."""
+    if not 256 <= a.size <= 8192:
+        raise ValueError("size doit etre entre 256 et 8192")
+    bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError(f"image illisible : {a.image}")
+    rgb = bgr[..., ::-1].astype(np.float32) / 255.0
+
+    sq = pbr.to_square(rgb, a.size, a.crop_scale, a.crop_offset)
+    if min(rgb.shape[:2]) * a.crop_scale < a.size:
+        print(f"attention : la source ({int(min(rgb.shape[:2]) * a.crop_scale)} px) est plus "
+              f"petite que --size {a.size} : suréchantillonnage, pas de detail en plus")
+    before = seam_ratio(sq)
+    if not a.no_seamless:
+        sq = make_seamless(sq, a.seam_band)
+
+    detail = None
+    if a.ai == "midas":
+        import ai
+        model = ai.Midas(a.model_path or ai.DEFAULT_MODEL)
+        detail = ai.ai_detail(sq, model, blur_fn=pbr.blur)
+
+    maps = pbr.build_maps(sq, a, detail)
+
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    stem = Path(a.image).stem
+    for k, v in maps.items():
+        save(out / f"{stem}_{k}.png", v, a.bit16 and k in ("height", "normal"))
+    preview = None
+    print(f"{a.size}x{a.size} -> {out}  ({', '.join(maps)})")
+    print(f"couture (<= 1 invisible) : photo {before:.1f}  ->  diffuse {seam_ratio(maps['diffuse']):.1f}"
+          f", normal {seam_ratio(maps['normal']):.1f}")
+
+    if a.preview:
+        d = np.clip(maps["diffuse"], 0, 1)
+        tiled = np.tile(d, (3, 3, 1))
+        preview = out / f"{stem}_preview_tiles.jpg"
+        save(preview, cv2.resize(tiled, (1536, 1536), interpolation=cv2.INTER_AREA))
+    return out, preview
+
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -63,43 +108,10 @@ def main():
     g.add_argument("--preview", action="store_true", help="ecrit un apercu en pavage 3x3")
     a = p.parse_args()
 
-    if not 256 <= a.size <= 8192:
-        raise SystemExit("--size doit etre entre 256 et 8192")
-    bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise SystemExit(f"image illisible : {a.image}")
-    rgb = bgr[..., ::-1].astype(np.float32) / 255.0
-
-    sq = pbr.to_square(rgb, a.size, a.crop_scale, a.crop_offset)
-    if min(rgb.shape[:2]) * a.crop_scale < a.size:
-        print(f"attention : la source ({int(min(rgb.shape[:2]) * a.crop_scale)} px) est plus "
-              f"petite que --size {a.size} : suréchantillonnage, pas de detail en plus")
-    before = seam_ratio(sq)
-    if not a.no_seamless:
-        sq = make_seamless(sq, a.seam_band)
-
-    detail = None
-    if a.ai == "midas":
-        import ai
-        model = ai.Midas(a.model_path or ai.DEFAULT_MODEL)
-        detail = ai.ai_detail(sq, model, blur_fn=pbr.blur)
-
-    maps = pbr.build_maps(sq, a, detail)
-
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    stem = Path(a.image).stem
-    for k, v in maps.items():
-        save(out / f"{stem}_{k}.png", v, a.bit16 and k in ("height", "normal"))
-    print(f"{a.size}x{a.size} -> {out}  ({', '.join(maps)})")
-    print(f"couture (<= 1 invisible) : photo {before:.1f}  ->  diffuse {seam_ratio(maps['diffuse']):.1f}"
-          f", normal {seam_ratio(maps['normal']):.1f}")
-
-    if a.preview:
-        d = np.clip(maps["diffuse"], 0, 1)
-        tiled = np.tile(d, (3, 3, 1))
-        save(out / f"{stem}_preview_tiles.jpg", cv2.resize(tiled, (1536, 1536),
-                                                            interpolation=cv2.INTER_AREA))
+    try:
+        generate(a)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 if __name__ == "__main__":
