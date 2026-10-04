@@ -27,6 +27,48 @@ from img2hdr import env_from_pano, preview, write_exr
 RESOLUTIONS = {"1k": 1024, "2k": 2048, "4k": 4096}
 
 
+def generate(a, pipe=None):
+    """Pipeline complet. `a` : Namespace (memes champs que la ligne de commande).
+    `pipe` : pipeline d'inpainting deja charge (None = en charger un, sauf dry_run).
+    Retourne (chemin_exr, chemin_apercu). Les messages passent par print()."""
+    width = RESOLUTIONS[a.res]
+    if a.gen_width % 64:
+        raise ValueError("gen_width doit etre un multiple de 64")
+    gen_width = min(a.gen_width, width)
+    bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise ValueError(f"image illisible : {a.image}")
+    enc = bgr[..., ::-1].astype(np.float32) / 255.0
+
+    if pipe is None and not a.dry_run:
+        pipe = po.load_pipe(a.model, a.lora, a.lora_scale, a.low_vram)
+    elif a.dry_run:
+        pipe = None
+    opts = Namespace(gen_width=gen_width, width=width, hfov=a.hfov, yaw=a.yaw, pitch=a.pitch,
+                     roll=a.roll, rings=a.rings, prompt=a.prompt, negative=a.negative,
+                     steps=a.steps, guidance=a.guidance, seed=a.seed)
+    pano, _ = po.run(enc, opts, pipe)
+
+    env, em, w = env_from_pano(enc, pano, a.hfov, width, a.yaw, a.pitch, a.roll, a.feather,
+                               a.peak, a.shoulder, a.exposure)
+
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    stem = Path(a.image).stem
+    exr = out / f"{stem}_hdri_{a.res}_acescg.exr"
+    write_exr(exr, cs.srgb_to_acescg(env), half=not a.float32)
+    prev = out / f"{stem}_hdri_{a.res}_preview.jpg"
+    preview(env, prev, exposure=-1.0)
+
+    y = hdr.luma(env)
+    print(f"{exr}  {env.shape[1]}x{env.shape[0]}  EXR {'32' if a.float32 else '16'} bits, "
+          f"ACEScg (lin_ap1_scene)")
+    print(f"photo d'origine : {w.mean() * 100:.1f} % de la sphere ; le reste est "
+          f"{'une extension lisse (dry-run)' if a.dry_run else 'genere par IA'}")
+    print(f"luminance max {y.max():.1f}")
+    return exr, prev
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -61,37 +103,10 @@ def main():
     p.add_argument("--float32", action="store_true", help="EXR 32 bits (defaut : 16 bits)")
     a = p.parse_args()
 
-    width = RESOLUTIONS[a.res]
-    if a.gen_width % 64:
-        raise SystemExit("--gen-width doit etre un multiple de 64")
-    gen_width = min(a.gen_width, width)
-    bgr = cv2.imread(a.image, cv2.IMREAD_COLOR)
-    if bgr is None:
-        raise SystemExit(f"image illisible : {a.image}")
-    enc = bgr[..., ::-1].astype(np.float32) / 255.0
-
-    pipe = None if a.dry_run else po.load_pipe(a.model, a.lora, a.lora_scale, a.low_vram)
-    opts = Namespace(gen_width=gen_width, width=width, hfov=a.hfov, yaw=a.yaw, pitch=a.pitch,
-                     roll=a.roll, rings=a.rings, prompt=a.prompt, negative=a.negative,
-                     steps=a.steps, guidance=a.guidance, seed=a.seed)
-    pano, _ = po.run(enc, opts, pipe)
-
-    env, em, w = env_from_pano(enc, pano, a.hfov, width, a.yaw, a.pitch, a.roll, a.feather,
-                               a.peak, a.shoulder, a.exposure)
-
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    stem = Path(a.image).stem
-    exr = out / f"{stem}_hdri_{a.res}_acescg.exr"
-    write_exr(exr, cs.srgb_to_acescg(env), half=not a.float32)
-    preview(env, out / f"{stem}_hdri_{a.res}_preview.jpg", exposure=-1.0)
-
-    y = hdr.luma(env)
-    print(f"{exr}  {env.shape[1]}x{env.shape[0]}  EXR {'32' if a.float32 else '16'} bits, "
-          f"ACEScg (lin_ap1_scene)")
-    print(f"photo d'origine : {w.mean() * 100:.1f} % de la sphere ; le reste est "
-          f"{'une extension lisse (dry-run)' if a.dry_run else 'genere par IA'}")
-    print(f"luminance max {y.max():.1f}")
+    try:
+        generate(a)
+    except ValueError as e:
+        raise SystemExit(str(e))
 
 
 if __name__ == "__main__":

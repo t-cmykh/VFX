@@ -25,6 +25,14 @@ et que `img2hdr.py` (`--peak`, `--exposure`...). `--dry-run` : sans modele (exte
 sans GPU. Test fait : 1k/2k/4k en `--dry-run` (EXR relus : bonnes tailles, ACEScg, latlong) ;
 la qualite de la generation IA n'est toujours **pas** testee (cf. plus bas).
 
+### Fenetre
+    python img2hdri_gui.py        # ou double-clic sur lancer_img2hdri.bat (Windows)
+
+Choix de l'image et du dossier, resolution 1K / 2K / 4K, prompt, reglages (hfov, yaw/pitch/roll, seed,
+exposition, modele, low-vram, EXR 32 bits), journal et apercu du resultat. Le modele IA reste charge
+entre deux generations. Tkinter est fourni avec Python sur Windows (sous Linux : `apt install python3-tk`).
+Teste sous Xvfb avec `--dry-run` (generation, journal, apercu) ; pas teste avec le vrai modele.
+
 ## Ce que fait l'outil
 1. **Decodage sRGB -> lineaire**, puis conversion **Rec.709 -> ACEScg (AP1)** (matrice calculee depuis les
    primaires, Bradford D65->D60, verifiee contre les valeurs publiees ; `test_colorspace.py`).
