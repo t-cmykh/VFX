@@ -6,6 +6,25 @@ Photo JPG/PNG -> **pseudo-HDRI** equirectangulaire (2:1) en **EXR ACEScg**, pour
     python img2hdr.py studio.jpg -o out/ --hfov 69 --width 4096
     python blender_test.py out/studio_hdri_acescg.exr rendu.png   # rendu de controle (Cycles, CPU)
 
+## Tool PC en une commande : `img2hdri_pc.py`
+Une image -> 360 complet genere par IA -> EXR ACEScg, resolution au choix (`--res 1k|2k|4k`).
+
+    pip install -r requirements-gpu.txt          # torch selon ta version de CUDA
+    python img2hdri_pc.py photo.jpg --res 4k --prompt "forest clearing at sunset" --hfov 60
+
+| `--res` | EXR |
+|---|---|
+| `1k` | 1024x512 |
+| `2k` (defaut) | 2048x1024 |
+| `4k` | 4096x2048 |
+
+Sortie : `out/<nom>_hdri_<res>_acescg.exr` (16 bits, `lin_ap1_scene`, latlong) + apercu JPG.
+La generation IA reste a `--gen-width 1024` et est agrandie pour 2k/4k ; seule la photo d'origine est
+a pleine resolution. Memes options que `pano_outpaint.py` (`--model`, `--lora`, `--low-vram`, `--seed`...)
+et que `img2hdr.py` (`--peak`, `--exposure`...). `--dry-run` : sans modele (extension lisse), pour tester
+sans GPU. Test fait : 1k/2k/4k en `--dry-run` (EXR relus : bonnes tailles, ACEScg, latlong) ;
+la qualite de la generation IA n'est toujours **pas** testee (cf. plus bas).
+
 ## Ce que fait l'outil
 1. **Decodage sRGB -> lineaire**, puis conversion **Rec.709 -> ACEScg (AP1)** (matrice calculee depuis les
    primaires, Bradford D65->D60, verifiee contre les valeurs publiees ; `test_colorspace.py`).

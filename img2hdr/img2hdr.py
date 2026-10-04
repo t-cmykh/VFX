@@ -27,6 +27,16 @@ def write_exr(path, rgb_acescg, half=True):
         f.write(str(path))
 
 
+def env_from_pano(enc, pano_enc, hfov, width, yaw, pitch, roll, feather, peak, shoulder, exposure):
+    """Panorama 360 complet (sRGB encode, 2:1) -> env lineaire Rec.709 a `width`, dynamique etendue.
+    Retourne (env, masque des sources, couverture de la photo d'origine)."""
+    penc = cv2.resize(pano_enc, (width, width // 2),
+                      interpolation=cv2.INTER_AREA if pano_enc.shape[1] > width else cv2.INTER_CUBIC)
+    env, em = hdr.expand_highlights(penc, cs.srgb_decode(penc), peak, shoulder, exposure)
+    _, w = hdr.project(enc, hfov, width, yaw, pitch, roll, feather)
+    return env, em, w
+
+
 def preview(env_rec709, path, exposure=0.0):
     """Apercu LDR : exposition + Reinhard + sRGB. Uniquement pour regarder le resultat."""
     x = env_rec709 * 2.0 ** exposure
@@ -75,10 +85,9 @@ def main():
             raise SystemExit(f"panorama illisible : {a.pano}")
         if pbgr.shape[1] != 2 * pbgr.shape[0]:
             raise SystemExit("le panorama doit etre equirectangulaire 2:1")
-        penc = cv2.resize(pbgr[..., ::-1].astype(np.float32) / 255.0, (a.width, a.width // 2),
-                          interpolation=cv2.INTER_AREA if pbgr.shape[1] > a.width else cv2.INTER_CUBIC)
-        env, em = hdr.expand_highlights(penc, cs.srgb_decode(penc), a.peak, a.shoulder, a.exposure)
-        _, w = hdr.project(enc, a.hfov, a.width, a.yaw, a.pitch, a.roll, a.feather)
+        env, em, w = env_from_pano(enc, pbgr[..., ::-1].astype(np.float32) / 255.0, a.hfov,
+                                   a.width, a.yaw, a.pitch, a.roll, a.feather, a.peak,
+                                   a.shoulder, a.exposure)
     else:
         hdr_lin, em = hdr.expand_highlights(enc, lin, a.peak, a.shoulder, a.exposure)
         ldr_lin = lin * 2.0 ** a.exposure
