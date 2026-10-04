@@ -3,9 +3,18 @@
 Photo -> cartes PBR tileables : diffuse, height, normal (OpenGL), roughness, specular, AO.
 Export **EXR ACEScg** (defaut) ou PNG, et **USD avec shader MaterialX** en option.
 
+**Outil PC** (application de bureau PySide6, pas une page web) :
+
     pip install -r requirements.txt
-    python img2pbr.py photo.jpg -o out/ --res 2k --usd        # ligne de commande
-    python app.py                                             # interface locale http://127.0.0.1:8765
+    python gui.py                                             # fenetre : image, 1K/2K/4K, EXR/PNG, toggle USD
+    python img2pbr.py photo.jpg -o out/ --res 2k --usd        # meme moteur en ligne de commande
+
+## Application autonome (.exe)
+`python build_exe.py` (PyInstaller) produit `dist/img2pbr/img2pbr[.exe]`, sans Python a installer. PyInstaller ne
+cross-compile pas : le workflow GitHub **img2pbr-exe** (Actions > Run workflow) construit Windows et macOS et
+depose les dossiers en artefacts. Le meme exe sert en ligne de commande : `img2pbr.exe --cli photo.jpg --res 2k --usd`.
+Teste ici : build Linux, export EXR + USD depuis l'exe gele, fenetre qui demarre. **Non teste** : le build Windows/macOS
+(le workflow n'a pas encore tourne) ; dossier ~560 Mo (usd-core, OpenCV, Qt).
 
 | Option | Effet |
 |---|---|
@@ -36,9 +45,10 @@ Les ids de noeuds suivent MaterialX 1.39 (`ND_normalmap_float`) : un hote en 1.3
 Verifie : noeuds/ports/types contre la librairie standard MaterialX 1.39 et connexions resolues par `pxr.Usd` (`test_export.py`).
 **Non verifie** : le rendu dans un moteur MaterialX (Karma, Storm, Arnold).
 
-## Interface locale
-`python app.py` : choix 1K/2K/4K, format EXR/PNG, toggle USD (+ plan de test), seamless, relief IA ; apercus et ZIP.
-Serveur standard library, 127.0.0.1 uniquement, rien ne quitte la machine.
+## Fenetre (`gui.py`)
+Glisser-deposer ou choisir une image, resolution 1K/2K/4K, EXR ACEScg ou PNG, toggle USD (+ plan de test), seamless,
+relief IA, reglages avances, dossier de sortie (defaut : `<nom>_pbr` a cote de l'image), apercus des 6 cartes.
+Les choix sont memorises d'une session a l'autre.
 
 ## Tests
 `python test_export.py` (ou pytest) : EXR ACEScg, resolution carree, USD MaterialX branche, PNG inchange.

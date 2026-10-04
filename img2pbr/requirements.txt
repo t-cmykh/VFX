@@ -1,5 +1,6 @@
 numpy
 opencv-python-headless
-onnxruntime        # relief IA (--ai midas), optionnel
-OpenEXR>=3.3       # export EXR
-usd-core           # export USD (--usd)
+PySide6-Essentials  # application de bureau (gui.py)
+OpenEXR>=3.3        # export EXR
+usd-core            # export USD (--usd)
+onnxruntime         # relief IA (--ai midas), optionnel
