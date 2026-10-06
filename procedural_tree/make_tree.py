@@ -33,8 +33,8 @@ rng = random.Random(args.seed)
 # Paramètres de l'arbre (mètres)
 # ----------------------------------------------------------------------------
 H = 12.0              # hauteur totale
-CROWN_BASE = 2.4      # début du feuillage (le tronc est nu en dessous)
-R_MAX = 3.0           # rayon max de la couronne
+CROWN_BASE = 1.9      # début du feuillage (le tronc est nu en dessous)
+R_MAX = 2.75           # rayon max de la couronne
 TRUNK_R0 = 0.115       # rayon du tronc à la base
 Z_UP = Vector((0, 0, 1))
 
@@ -149,6 +149,18 @@ def grey_material(name, value):
 mat_grey = grey_material("Grey", 0.55)
 mat_ground = grey_material("GreyGround", 0.35)
 
+# Écorce : gris plus sombre + bruit en bump pour casser le tronc lisse
+mat_bark = grey_material("GreyBark", 0.32)
+_nt = mat_bark.node_tree
+_noise = _nt.nodes.new("ShaderNodeTexNoise")
+_noise.inputs["Scale"].default_value = 60
+_noise.inputs["Detail"].default_value = 8
+_bump = _nt.nodes.new("ShaderNodeBump")
+_bump.inputs["Strength"].default_value = 0.6
+_bump.inputs["Distance"].default_value = 0.02
+_nt.links.new(_noise.outputs["Fac"], _bump.inputs["Height"])
+_nt.links.new(_bump.outputs["Normal"], _nt.nodes["Principled BSDF"].inputs["Normal"])
+
 # ----------------------------------------------------------------------------
 # 1. CURVES : tronc / big / medium / small
 # ----------------------------------------------------------------------------
@@ -173,7 +185,7 @@ phase = 0.0
 while h < H - 0.5:
     u = (h - CROWN_BASE) / (H - CROWN_BASE)
     # profil : plus large vers 25 % de la couronne puis cône régulier jusqu'à la pointe
-    prof = (1 - u) ** 1.1 * (0.6 + 0.4 * smoothstep(0.0, 0.2, u))
+    prof = (1 - u) ** 1.1 * (0.85 + 0.15 * smoothstep(0.0, 0.2, u))
     n_w = 5 if u < 0.7 else 4
     phase += golden
     for k in range(n_w):
@@ -181,12 +193,12 @@ while h < H - 0.5:
         L = R_MAX * prof * rng.uniform(0.85, 1.1) + 0.12
         z = h + rng.uniform(-0.12, 0.12)
         tp, tt, tr = trunk.at(z / H)
-        elev = math.radians(-14 + 52 * u + rng.uniform(-6, 6))     # bas : retombant, haut : relevé
+        elev = math.radians(-20 + 60 * u + rng.uniform(-6, 6))     # bas : retombant, haut : relevé
         d = Vector((math.cos(ang) * math.cos(elev), math.sin(ang) * math.cos(elev), math.sin(elev)))
         r0 = min(tr * 0.55, 0.012 + 0.016 * L)
-        b = grow(tp, d, L, r0, 0.004, 9, droop=0.55 * (1 - u) + 0.1, up=0.35, wobble=0.03)
+        b = grow(tp, d, L, r0, 0.004, 9, droop=0.6 * (1 - u) ** 1.5 + 0.1, up=0.35, wobble=0.03)
         big.append(b)
-    h += 0.42 - 0.16 * u
+    h += 0.46 - 0.16 * u
 
 # Medium branches : le long des big, alternées gauche/droite
 medium = []
@@ -201,7 +213,7 @@ for b in big:
             medium.append(grow(p, d, L, max(r * 0.5, 0.004), 0.0025, 5,
                                droop=0.25, up=0.15, wobble=0.03))
         side = -side
-        t += rng.uniform(0.07, 0.10) * (3.0 / max(b.length, 1.0)) ** 0.5
+        t += rng.uniform(0.055, 0.08) * (3.0 / max(b.length, 1.0)) ** 0.5
 
 # Small branches : portent les feuilles
 small = []
@@ -215,7 +227,7 @@ for b in medium:
         small.append(grow(p, d, L, max(r * 0.55, 0.0025), 0.0012, 3,
                           droop=0.15, up=0.1, wobble=0.04))
         side = -side
-        t += rng.uniform(0.12, 0.16) / max(0.45, b.length) * 0.55 + 0.06
+        t += rng.uniform(0.12, 0.16) / max(0.45, b.length) * 0.55 + 0.04
 
 print(f"trunk 1 | big {len(big)} | medium {len(medium)} | small {len(small)}")
 
@@ -228,10 +240,10 @@ c_med = make_curve_object("c_MediumBranches", medium, 1)
 c_small = make_curve_object("c_SmallBranches", small, 1, poly=True)
 bpy.context.view_layer.update()
 
-g_trunk = curve_to_mesh_object(c_trunk, "Trunk", mat_grey)
-g_big = curve_to_mesh_object(c_big, "BigBranches", mat_grey)
-g_med = curve_to_mesh_object(c_med, "MediumBranches", mat_grey)
-g_small = curve_to_mesh_object(c_small, "SmallBranches", mat_grey)
+g_trunk = curve_to_mesh_object(c_trunk, "Trunk", mat_bark)
+g_big = curve_to_mesh_object(c_big, "BigBranches", mat_bark)
+g_med = curve_to_mesh_object(c_med, "MediumBranches", mat_bark)
+g_small = curve_to_mesh_object(c_small, "SmallBranches", mat_bark)
 
 # Les curves d'origine servent de guides : on retire leur épaisseur (rien à rendre)
 # mais elles restent disponibles pour le Geometry Nodes.
@@ -243,8 +255,8 @@ c_small.data.bevel_depth = 0.0
 # 3. FEUILLE UNIQUE, À PLAT, AU CENTRE DU MONDE
 #    Rameau d'aiguilles : pointe vers +X, posé dans le plan XY, légèrement dentelé
 # ----------------------------------------------------------------------------
-LEAF_L, LEAF_W = 0.17, 0.045
-LEAF_SCALE_MIN, LEAF_SCALE_MAX = 0.45, 1.7     # random de taille par feuille
+LEAF_L, LEAF_W = 0.15, 0.032
+LEAF_SCALE_MIN, LEAF_SCALE_MAX = 0.6, 1.5     # random de taille par feuille
 stations = 10
 verts, faces = [], []
 for i in range(stations + 1):
@@ -294,7 +306,7 @@ n_curve.inputs["Object"].default_value = c_small
 n_leaf = node("GeometryNodeObjectInfo", 0, transform_space="ORIGINAL")
 n_leaf.inputs["Object"].default_value = leaf
 n_pts = node("GeometryNodeCurveToPoints", 250, mode="LENGTH")
-n_pts.inputs["Length"].default_value = 0.03
+n_pts.inputs["Length"].default_value = 0.016
 
 # rotations / échelles aléatoires par instance
 n_rrot = node("FunctionNodeRandomValue", 250, data_type="FLOAT_VECTOR")
@@ -354,7 +366,7 @@ def sphere(loc, scale, name):
     return o
 
 
-HX, HY = -1.9, -2.2            # position du mannequin
+HX, HY = -3.4, -2.2            # position du mannequin
 parts = []
 for s in (-1, 1):
     x = s * 0.095
