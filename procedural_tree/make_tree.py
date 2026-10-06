@@ -244,6 +244,7 @@ c_small.data.bevel_depth = 0.0
 #    Rameau d'aiguilles : pointe vers +X, posé dans le plan XY, légèrement dentelé
 # ----------------------------------------------------------------------------
 LEAF_L, LEAF_W = 0.17, 0.045
+LEAF_SCALE_MIN, LEAF_SCALE_MAX = 0.45, 1.7     # random de taille par feuille
 stations = 10
 verts, faces = [], []
 for i in range(stations + 1):
@@ -301,8 +302,8 @@ first_enabled(n_rrot, "Min").default_value = (-math.pi, -0.35, -1.0)
 first_enabled(n_rrot, "Max").default_value = (math.pi, 0.35, 1.0)
 first_enabled(n_rrot, "Seed").default_value = 3
 n_rscl = node("FunctionNodeRandomValue", 250, data_type="FLOAT")
-first_enabled(n_rscl, "Min").default_value = 0.8
-first_enabled(n_rscl, "Max").default_value = 1.35
+first_enabled(n_rscl, "Min").default_value = LEAF_SCALE_MIN
+first_enabled(n_rscl, "Max").default_value = LEAF_SCALE_MAX
 first_enabled(n_rscl, "Seed").default_value = 11
 
 n_inst = node("GeometryNodeInstanceOnPoints", 600)
