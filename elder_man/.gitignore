@@ -1,3 +1,6 @@
 final.log
-elder_man/renders/[dfstv]*.png
-elder_man/renders/t_*.png
+renders/*
+!renders/hero.png
+!renders/turn_*.png
+!renders/head_*.png
+!renders/character_sheet_clay.png
