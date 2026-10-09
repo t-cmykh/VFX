@@ -24,6 +24,8 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
 MARGINS = [14, 20, 26, 32, 40, 48, 56, 64, 72, 84]
+RING_T = 0.4             # position de la rangee intermediaire (0 = rim, 1 = bloc)
+RELAX_ITERS = 20
 LONG_EDGE = 10.0          # un cote "long" du rim (les chanfreins des coins font ~2)
 
 
@@ -280,6 +282,7 @@ class Window:
 
     def apply(self, plan, protected):
         bm, snap = self.bm, self.snap
+        self.snap = snap
         n = plan["n"]
         for (k, a, bb, t) in plan["sub"]:
             point = a.co.lerp(bb.co, t)
@@ -308,7 +311,21 @@ class Window:
         bmesh.ops.delete(bm, geom=[v for v in verts if v.is_valid and v not in keep_v and not v.link_faces], context='VERTS')
         N = len(inner)
         s, _ = best_shift([v.co for v in inner], [v.co for v in outer])
-        new = [bm.faces.new([inner[i], outer[(i + s) % N], outer[(i + s + 1) % N], inner[(i + 1) % N]]) for i in range(N)]
+        # une rangee de points intermediaires recolles sur la surface d'origine :
+        # sans elle, les gros quads plats cassent la courbure (facettes au lissage)
+        ring = [bm.verts.new(snap(inner[i].co.lerp(outer[(i + s) % N].co, RING_T))) for i in range(N)]
+        for _ in range(RELAX_ITERS):
+            tgt = []
+            for i, v in enumerate(ring):
+                nb = [ring[i - 1].co, ring[(i + 1) % N].co, inner[i].co, outer[(i + s) % N].co]
+                tgt.append(snap(v.co.lerp(sum(nb, Vector()) / 4, 0.5)))
+            for v, p in zip(ring, tgt):
+                v.co = p
+        new = []
+        for i in range(N):
+            j = (i + 1) % N
+            new.append(bm.faces.new([inner[i], ring[i], ring[j], inner[j]]))
+            new.append(bm.faces.new([ring[i], outer[(i + s) % N], outer[(j + s) % N], ring[j]]))
         for f in new:
             f.normal_update()
             if f.normal.dot(n) < 0:
