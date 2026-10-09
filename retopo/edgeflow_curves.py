@@ -32,14 +32,15 @@ MARGE = 24.0                       # distance entre le bord d'une fenetre et sa 
 PORT_R = 2.0                       # rayon de l'anneau exterieur d'un hublot (x rayon octogone)
 STEP = 8.0                         # pas d'echantillonnage des lignes (unites)
 TOL = 0.6                          # tolerance de simplification des curves (unites)
-RAMPES = ((-720.0, -590.0), (2380.0, 2432.0))   # marches du pont : arriere->milieu, milieu->avant
+RAMPES = ((-720.0, -590.0), (2397.0, 2415.0))   # marches du pont : arriere->milieu, milieu->avant
 # hauteurs z des lignes horizontales par zone (arriere, milieu, avant)
 HORIZ = {
     "H1_haut_fenetres": (465.0, 590.0, 479.0),
     "H2_bas_fenetres": (366.0, 471.0, 386.0),
     "H3_bas_hublots": (276.0, 276.0, 276.0),
     "H4": (190.0, 190.0, 190.0),
-    "H5_bouchain": (126.0, 126.0, 126.0),
+    "H5_bas_decoupe": (126.0, 126.0, 126.0),
+    "H6_bouchain": (-16.0, -16.0, -16.0),     # ligne au pied du bouchain, juste au-dessus du plancher
 }
 SECTIONS_AVANT = [3500, 3750, 4000, 4250, 4500, 4750, 5000, 5150]
 SECTIONS_PLANCHER = list(range(-2200, 4100, 400))
@@ -431,13 +432,28 @@ def main(abc, name, out_dir):
     for k, s in enumerate(segs):
         add("HORIZONTALES", "H0_sous_pont_%d" % k, s)
 
-    # 3. verticales : une de chaque cote de chaque fenetre (celles qui se recouvrent sont fusionnees)
-    edges = []
-    for (i, n, y0, y1, z0, z1, l) in info:
-        if z1 - z0 > 180 and (y1 - y0) > 600:       # grande decoupe : traitee en cadre
-            edges += [y0 - MARGE, y1 + MARGE]
-        elif z0 > 300:
-            edges += [y0 - MARGE, y1 + MARGE]
+    # 3. verticales : une de chaque cote de chaque fenetre (celles qui se recouvrent sont fusionnees).
+    #    Quand deux fenetres voisines changent de rangee (marche du pont), on garde une colonne vide
+    #    etroite entre elles : c'est la que les lignes horizontales font leur rampe.
+    wins = sorted((y0, y1, 0.5 * (z0 + z1), z1 - z0) for (i, n, y0, y1, z0, z1, l) in info
+                  if z0 > 300 and z1 - z0 < 120 or (z1 - z0 > 180 and (y1 - y0) > 600))
+    edges, fixed = [], []
+    skip_left = set()
+    for k, (y0, y1, zc, h) in enumerate(wins):
+        left = None if k in skip_left else y0 - MARGE
+        right = y1 + MARGE
+        if k + 1 < len(wins):
+            ny0, ny1, nzc, nh = wins[k + 1]
+            gap = ny0 - y1
+            if gap < 2 * MARGE + 30 and abs(nzc - zc) > 40 and h < 120 and nh < 120:
+                m = (gap - 20) / 2
+                fixed += [y1 + m, ny0 - m]
+                right = None
+                skip_left.add(k + 1)
+        if left is not None:
+            edges.append(left)
+        if right is not None:
+            edges.append(right)
     edges.sort()
     merged, cur = [], [edges[0]]
     for e in edges[1:]:
@@ -447,21 +463,24 @@ def main(abc, name, out_dir):
             merged.append(sum(cur) / len(cur))
             cur = [e]
     merged.append(sum(cur) / len(cur))
+    merged = sorted(merged + fixed + [RAMPES[0][0], RAMPES[0][1]])   # la rampe arriere a ses propres colonnes
+    # une verticale ne doit pas couper un hublot : on la decale juste a cote
+    for (cy, cz, r) in find_portholes(bm):
+        for i, yv in enumerate(merged):
+            if abs(yv - cy) < r + 6:
+                merged[i] = cy + math.copysign(r + 8, yv - cy if yv != cy else 1)
+    merged = sorted(merged)
     for k, y in enumerate(merged):
         for sec in hull.section(y):
-            top, _ = chine_cut(order_top_down(sec))
-            add("VERTICALES", "V_y%+05d" % y, top)
+            add("VERTICALES", "V_y%+05d" % y, order_top_down(sec))
 
-    # 4. cadres d'appui autour des ouvertures atypiques (decoupe, fenetre haute, petite fenetre)
+    # 4. lignes partielles qui ferment les cellules des ouvertures hautes :
+    #    haut de la grande decoupe et haut de la fenetre haute
     for (i, n, y0, y1, z0, z1, l) in info:
-        atypique = (z1 - z0 > 120) or n == 6
-        if not atypique:
-            continue
-        poly = [(v.co.y, v.co.z) for v in l]
-        loop = resample_closed(offset_loop(poly, MARGE), 60)
-        pts = [hull.ray_x(a, b) for a, b in loop]
-        if all(p is not None for p in pts):
-            add("CADRES", "cadre_ouverture_%02d" % i, pts, True)
+        if z1 - z0 > 120:
+            ztop = z1 + MARGE
+            for k, seg in enumerate(line_y(hull, lambda y, z=ztop: z, y0 - MARGE, y1 + MARGE)):
+                add("HORIZONTALES", "H_haut_ouverture_%02d_%d" % (i, k), seg)
 
     # 5. hublots : cercle de l'octogone existant + anneau exterieur
     for k, (cy, cz, r) in enumerate(find_portholes(bm)):
@@ -477,11 +496,6 @@ def main(abc, name, out_dir):
     for y in SECTIONS_AVANT:
         for sec in hull.section(y):
             add("SECTIONS", "S_avant_y%+05d" % y, order_top_down(sec))
-    for y in SECTIONS_PLANCHER:
-        for sec in hull.section(y):
-            _, floor = chine_cut(order_top_down(sec))
-            if len(floor) > 2:
-                add("SECTIONS", "S_plancher_y%+05d" % y, floor)
 
     # 7. plancher : lignes longitudinales
     for x in PLANCHER_X:
