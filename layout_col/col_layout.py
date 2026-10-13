@@ -13,6 +13,7 @@ Options (après le "--") :
     --crowd-scale F     multiplicateur du nombre de spectateurs (défaut 1.0)
     --reference PATH    photo de référence affichée en fond de caméra
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
+    --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --anim              avec --render : rend toute l'animation (PNG numérotés)
     --res W H           résolution (défaut 1320 866 = format de la photo)
 
@@ -420,7 +421,6 @@ def build_crowd(coll, rng, scale):
     # 6) quelques personnes sur la chaussée
     c.fill(N(14), lambda: (u(25, 60), -R + u(-ROAD_W / 2 + 0.6, ROAD_W / 2 - 0.6)),
            sit_p=0.0, on_road=True)
-    c.fill(N(8), lambda: (u(40, 95), R + u(-ROAD_W / 2 + 0.6, 0.5)), sit_p=0.0, on_road=True)
     return c.count
 
 
@@ -512,6 +512,126 @@ def build_flag(coll):
     x, y = -4.0, 18.0
     new_obj("Flag", me, coll, (x, y, terrain_h(x, y)), 0.3)
 
+
+
+# -------------------------------------------------------------------- peloton
+PELOTON_JERSEYS = [
+    (0.95, 0.80, 0.10), (0.80, 0.08, 0.08), (0.10, 0.25, 0.75), (0.95, 0.95, 0.95),
+    (0.10, 0.55, 0.25), (0.92, 0.42, 0.08), (0.10, 0.10, 0.13), (0.80, 0.30, 0.60),
+]
+Q = math.pi * R / 2          # longueur d'un quart d'arc
+
+
+def path_pos(s):
+    """Abscisse curviligne s (0 = sommet de l'épingle). Sens de course : la route
+    monte la branche basse, tourne au sommet, puis file vers +X sur la branche haute."""
+    if s <= -Q:
+        return Vector((-s - Q, -R, 0)), Vector((-1, 0, 0))
+    if s >= Q:
+        return Vector((s - Q, R, 0)), Vector((1, 0, 0))
+    th = -math.pi - s / R
+    return (Vector((R * math.cos(th), R * math.sin(th), 0)),
+            Vector((math.sin(th), -math.cos(th), 0)))
+
+
+def add_limb(bm, p0, p1, r0, r1, mi, seg=6):
+    p0, p1 = Vector(p0), Vector(p1)
+    d = p1 - p0
+    rot = d.to_track_quat("Z", "X").to_matrix()
+    add_cyl(bm, r0, r1, d.length, (p0 + p1) / 2, mi, rot=rot, seg=seg)
+
+
+def rider_mesh(team, white_helmet):
+    """Cycliste + vélo, origine au sol, l'avant est +Y."""
+    bm = bmesh.new()
+    jersey = PELOTON_JERSEYS[team]
+    mats = [mat(f"Jersey{team}", jersey, 0.7),
+            mat("RiderSkin", (0.80, 0.58, 0.46), 0.7),
+            mat("Shorts", (0.05, 0.05, 0.07), 0.8),
+            mat("HelmetW" if white_helmet else f"HelmetT{team}",
+                (0.95, 0.95, 0.95) if white_helmet else jersey, 0.4),
+            mat("BikeFrameR", (0.08, 0.08, 0.10), 0.4, 0.6),
+            mat("BikeTire", (0.04, 0.04, 0.04), 0.9)]
+    rw = Matrix.Rotation(math.pi / 2, 3, "Y")
+    for y in (-0.52, 0.52):                                   # roues
+        add_torus(bm, 0.33, 0.022, (0, y, 0.35), 5, rot=rw, n=16, m_=4)
+    add_limb(bm, (0, -0.52, 0.35), (0, -0.12, 0.88), 0.013, 0.013, 4)   # base arrière
+    add_limb(bm, (0, -0.12, 0.88), (0, 0.38, 0.80), 0.014, 0.014, 4)    # tube horizontal
+    add_limb(bm, (0, 0.38, 0.80), (0, 0.52, 0.35), 0.013, 0.013, 4)     # fourche
+    add_limb(bm, (0, -0.12, 0.88), (0, 0.10, 0.30), 0.016, 0.016, 4)    # tube diagonal
+    add_limb(bm, (0, 0.38, 0.80), (0, 0.36, 0.95), 0.012, 0.012, 4)     # potence
+    add_box(bm, (0.40, 0.03, 0.03), (0, 0.38, 0.95), 4)                 # guidon
+    hip = Vector((0, -0.12, 0.98))
+    sh = Vector((0, 0.40, 1.22))
+    add_limb(bm, hip, sh, 0.15, 0.13, 0, seg=8)                         # buste penché
+    add_sphere(bm, 0.075, sh + Vector((0, 0.14, 0.00)), 1)              # visage
+    add_sphere(bm, 0.115, sh + Vector((0, 0.12, 0.07)), 3, (1, 1.3, 0.8))  # casque
+    for sx in (-1, 1):
+        add_limb(bm, sh + Vector((sx * 0.17, 0, -0.04)), (sx * 0.20, 0.40, 0.97), 0.05, 0.04, 0)
+        up = sx < 0                                                     # une jambe haute, une basse
+        knee = (sx * 0.11, 0.26, 0.84) if up else (sx * 0.11, 0.06, 0.62)
+        foot = (sx * 0.11, 0.10, 0.50) if up else (sx * 0.11, 0.00, 0.28)
+        add_limb(bm, (sx * 0.10, hip.y, hip.z), knee, 0.075, 0.06, 2)   # cuisse (cuissard)
+        add_limb(bm, knee, foot, 0.05, 0.04, 1)                         # mollet
+    return finish(f"Rider_{team}_{int(white_helmet)}", bm, mats)
+
+
+def peloton_formation(rng, n):
+    """(a, b) = distance derrière la tête, décalage latéral. Forme en 'larme' :
+    étroit devant, large au milieu, effilé derrière + échappés + attardés."""
+    half_max = ROAD_W / 2 - 0.75
+    pts = []
+    tries = 0
+    while len(pts) < n and tries < 20000:
+        tries += 1
+        a = 28.0 * rng.random() ** 1.2
+        w = 0.9 + (half_max - 0.9) * math.sin(math.pi * min(1.0, (a / 28.0) ** 0.75))
+        b = rng.uniform(-w, w)
+        if all(((a - pa) / 1.75) ** 2 + ((b - pb) / 0.85) ** 2 > 1.0 for pa, pb in pts):
+            pts.append((a, b))
+    pts.sort()
+    breakaway = [(-11.0, 0.3), (-14.5, -0.5), (-18.0, 0.2)]          # 3 échappés devant
+    stragglers = [(34.0, 0.4), (37.5, -0.6), (41.0, 0.1), (45.0, -0.3)]
+    return breakaway + pts + stragglers
+
+
+def build_peloton(coll, rng, frames, fps=24, n=62, speed=11.5):
+    protos = {}
+    form = peloton_formation(rng, n)
+    s_front0 = 24.0                        # tête du peloton juste après le sommet
+    pref = bpy.context.preferences.edit
+    old_interp = pref.keyframe_new_interpolation_type
+    pref.keyframe_new_interpolation_type = "LINEAR"     # vitesse constante
+    team_of = {}
+    last = max(frames, 1)
+    for i, (a, b) in enumerate(form):
+        grp = int(a // 6)                  # les équipes roulent par blocs
+        if grp not in team_of:
+            team_of[grp] = rng.sample(range(len(PELOTON_JERSEYS)), 3)
+        team = rng.choice(team_of[grp]) if rng.random() < 0.8 else rng.randrange(len(PELOTON_JERSEYS))
+        wh = rng.random() < 0.5
+        if (team, wh) not in protos:
+            protos[(team, wh)] = rider_mesh(team, wh)
+        o = new_obj(f"Rider{i:02d}", protos[(team, wh)], coll)
+        phase = rng.uniform(0, 6.28)
+        steps = list(range(1, last + 1, 2))
+        if steps[-1] != last:
+            steps.append(last)
+        for f in steps:
+            s = s_front0 + speed * (f - 1) / fps - a
+            c, t = path_pos(s)
+            nrm = Vector((-t.y, t.x, 0))
+            sway = 0.10 * math.sin(phase + (f - 1) / fps * 2.2)
+            p = c + nrm * (b + sway)
+            o.location = (p.x, p.y, ROAD_Z)
+            o.rotation_euler = (0, 0, yaw_xy(t.x, t.y) + 0.04 * math.sin(phase + f * 0.1))
+            if frames > 0:
+                o.keyframe_insert("location", frame=f)
+                o.keyframe_insert("rotation_euler", frame=f)
+            else:
+                break
+    pref.keyframe_new_interpolation_type = old_interp
+    return len(form)
 
 # --------------------------------------------------------------- scène globale
 def setup_world(sun_coll):
@@ -614,6 +734,8 @@ def main():
         "reference.jpg"))
     ap.add_argument("--frames", type=int, default=120,
                     help="durée du mouvement de caméra en images (0 = caméra fixe)")
+    ap.add_argument("--riders", type=int, default=62,
+                    help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--anim", action="store_true", help="rend toute l'animation")
     ap.add_argument("--res", type=int, nargs=2, default=(1320, 866))
     a = ap.parse_args(argv)
@@ -625,8 +747,8 @@ def main():
         c = bpy.data.collections.new(name)
         sc.collection.children.link(c)
         return c
-    c_terrain, c_road, c_crowd, c_props, c_light, c_cam = (
-        coll("Terrain"), coll("Road"), coll("Crowd"), coll("Props"),
+    c_terrain, c_road, c_crowd, c_props, c_peloton, c_light, c_cam = (
+        coll("Terrain"), coll("Road"), coll("Crowd"), coll("Props"), coll("Peloton"),
         coll("Lighting"), coll("Camera"))
 
     rng = random.Random(a.seed)
@@ -644,6 +766,9 @@ def main():
     setup_render(*a.res)
     if a.frames > 0:
         animate_camera(a.frames)
+    if a.riders > 0:
+        nr = build_peloton(c_peloton, rng, a.frames, n=a.riders)
+        print(f"Peloton : {nr} coureurs")
     print(f"Layout prêt : {n} spectateurs")
 
     if a.save:
