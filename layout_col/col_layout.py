@@ -12,6 +12,8 @@ Options (après le "--") :
     --seed N            graine aléatoire (défaut 7)
     --crowd-scale F     multiplicateur du nombre de spectateurs (défaut 1.0)
     --reference PATH    photo de référence affichée en fond de caméra
+    --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
+    --anim              avec --render : rend toute l'animation (PNG numérotés)
     --res W H           résolution (défaut 1320 866 = format de la photo)
 
 Repère : 1 unité = 1 m. Route en épingle ouverte vers +X, sommet de la
@@ -559,6 +561,30 @@ def setup_camera(coll, reference):
             print("Image de référence ignorée :", e)
 
 
+def animate_camera(frames, fps=24, pan_deg=9.0, dolly=7.0):
+    """Léger pan vers la droite + léger travelling arrière (ease in/out)."""
+    sc = bpy.context.scene
+    sc.render.fps = fps
+    sc.frame_start, sc.frame_end = 1, frames
+    cam = sc.camera
+    fwd = cam.rotation_euler.to_quaternion() @ Vector((0, 0, -1))
+    fwd.z = 0
+    fwd.normalize()
+    p0 = cam.location.copy()
+    e0 = cam.rotation_euler.copy()
+    p1 = p0 - fwd * dolly
+    p1.z = terrain_h(p1.x, p1.y) + 5.0          # reste au-dessus du talus
+    e1 = e0.copy()
+    e1.z -= math.radians(pan_deg)               # z négatif = pan à droite
+    cam.location, cam.rotation_euler = p0, e0
+    cam.keyframe_insert("location", frame=1)
+    cam.keyframe_insert("rotation_euler", frame=1)
+    cam.location, cam.rotation_euler = p1, e1
+    cam.keyframe_insert("location", frame=frames)
+    cam.keyframe_insert("rotation_euler", frame=frames)
+    cam.location, cam.rotation_euler = p0, e0
+
+
 def setup_render(w, h):
     sc = bpy.context.scene
     sc.render.resolution_x, sc.render.resolution_y = w, h
@@ -586,6 +612,9 @@ def main():
     ap.add_argument("--reference", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else ".",
         "reference.jpg"))
+    ap.add_argument("--frames", type=int, default=120,
+                    help="durée du mouvement de caméra en images (0 = caméra fixe)")
+    ap.add_argument("--anim", action="store_true", help="rend toute l'animation")
     ap.add_argument("--res", type=int, nargs=2, default=(1320, 866))
     a = ap.parse_args(argv)
 
@@ -613,13 +642,15 @@ def main():
     setup_world(c_light)
     setup_camera(c_cam, a.reference)
     setup_render(*a.res)
+    if a.frames > 0:
+        animate_camera(a.frames)
     print(f"Layout prêt : {n} spectateurs")
 
     if a.save:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
     if a.render:
         sc.render.filepath = os.path.abspath(a.render)
-        bpy.ops.render.render(write_still=True)
+        bpy.ops.render.render(animation=a.anim, write_still=not a.anim)
 
 
 if __name__ == "__main__":
