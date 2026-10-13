@@ -1,6 +1,6 @@
 """
 Layout 3D "col de montagne / épingle de route avec spectateurs" (bpy)
-Basé sur la photo reference.jpg (virage en épingle, foule, camping-car).
+Basé sur la photo reference.jpg (virage en épingle, foule de spectateurs, peloton).
 
 Usage (Blender 3.6+ / 4.x / 5.x) :
     blender -b -P col_layout.py -- --render out.png --save col_layout.blend
@@ -14,6 +14,7 @@ Options (après le "--") :
     --reference PATH    photo de référence affichée en fond de caméra
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
+    --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
     --anim              avec --render : rend toute l'animation (PNG numérotés)
     --res W H           résolution (défaut 1320 866 = format de la photo)
 
@@ -345,10 +346,22 @@ def person_mesh(shirt_i, seated, hat_i):
     return finish(f"P_{shirt_i}_{int(seated)}_{hat_i}", bm, mats)
 
 
+def arm_mesh(shirt_i):
+    """Bras qui pend le long de -Z, pivot à l'épaule (manche + main)."""
+    bm = bmesh.new()
+    mats = [mat(f"Shirt{shirt_i}", PALETTE_SHIRTS[shirt_i], 0.85),
+            mat("Skin0", PALETTE_SKIN[0], 0.7)]
+    add_cyl(bm, 0.045, 0.055, 0.40, (0, 0, -0.20), 0, seg=6)
+    add_cyl(bm, 0.035, 0.04, 0.20, (0, 0, -0.50), 1, seg=6)
+    return finish(f"Arm_{shirt_i}", bm, mats)
+
+
 class Crowd:
     def __init__(self, coll, rng):
         self.coll, self.rng = coll, rng
         self.protos = {}
+        self.arm_protos = {}
+        self.people = []          # (objet, bras G/D, assis, x, y)
         self.taken = set()
         self.count = 0
 
@@ -368,7 +381,8 @@ class Crowd:
         self.taken.add(key)
         seated = rng.random() < sit_p
         hat = rng.randint(1, 3) if rng.random() < hat_p else 0
-        me = self.proto(rng.randrange(len(PALETTE_SHIRTS)), seated, hat)
+        shirt = rng.randrange(len(PALETTE_SHIRTS))
+        me = self.proto(shirt, seated, hat)
         z = terrain_h(x, y) - 0.02
         if face_road:
             cx_, cy_ = nearest_center(x, y)
@@ -378,6 +392,18 @@ class Crowd:
         o = new_obj(f"Person{self.count:04d}", me, self.coll, (x, y, z), yaw)
         s = rng.uniform(0.9, 1.08)
         o.scale = (s, s, s)
+        if shirt not in self.arm_protos:
+            self.arm_protos[shirt] = arm_mesh(shirt)
+        arms = []
+        for side in (1, -1):
+            arm = bpy.data.objects.new(f"{o.name}_arm{'R' if side > 0 else 'L'}",
+                                       self.arm_protos[shirt])
+            self.coll.objects.link(arm)
+            arm.parent = o
+            arm.location = (side * 0.24, 0, 0.68 if seated else 1.42)
+            arm.rotation_euler = (0, -side * 0.12, 0)       # bras le long du corps
+            arms.append(arm)
+        self.people.append((o, arms, seated, x, y))
         self.count += 1
         return True
 
@@ -399,7 +425,7 @@ def build_crowd(coll, rng, scale):
 
     # 1) foule dense en bordure extérieure de la branche haute (ligne de crête)
     c.fill(N(190), lambda: (u(4, 105), R + edge + u(0, 3.8) ** 1.0), sit_p=0.12)
-    # 2) arc autour du sommet de l'épingle (derrière le camping-car)
+    # 2) arc autour du sommet de l'épingle
     def arc():
         th = math.radians(u(100, 235))
         r = R + edge + u(0, 3.5)
@@ -421,35 +447,12 @@ def build_crowd(coll, rng, scale):
     # 6) quelques personnes sur la chaussée
     c.fill(N(14), lambda: (u(25, 60), -R + u(-ROAD_W / 2 + 0.6, ROAD_W / 2 - 0.6)),
            sit_p=0.0, on_road=True)
-    return c.count
+    return c
 
 
 # ---------------------------------------------------------------------- props
 def yaw_xy(tx, ty):
     return math.atan2(-tx, ty)
-
-
-def build_van(coll):
-    bm = bmesh.new()
-    mats = [mat("VanWhite", (0.92, 0.92, 0.90), 0.5), mat("VanGlass", (0.05, 0.07, 0.10), 0.2),
-            mat("Tire", (0.03, 0.03, 0.03), 0.9), mat("VanStripe", (0.55, 0.55, 0.58), 0.6)]
-    add_box(bm, (2.15, 4.6, 2.35), (0, -0.55, 1.55), 0)                  # cellule
-    add_box(bm, (2.1, 1.9, 1.55), (0, 2.45, 1.05), 0)                    # capot-cabine
-    add_box(bm, (1.8, 0.05, 0.7), (0, 3.38, 1.55), 1)                    # pare-brise
-    add_box(bm, (0.04, 1.1, 0.55), (1.08, 2.4, 1.55), 1)                 # vitre cabine D
-    add_box(bm, (0.04, 1.1, 0.55), (-1.08, 2.4, 1.55), 1)
-    add_box(bm, (0.04, 1.2, 0.6), (1.09, -0.6, 1.9), 1)                  # fenêtre cellule
-    add_box(bm, (2.17, 0.02, 0.12), (0, -0.55, 1.1), 3)
-    for sx in (-1, 1):
-        for y in (-1.7, 2.3):
-            add_cyl(bm, 0.38, 0.38, 0.25, (sx * 1.0, y, 0.38), 2,
-                    rot=Matrix.Rotation(math.pi / 2, 3, "Y"), seg=12)
-    me = finish("Van", bm, mats)
-    th = math.radians(-150)
-    r = R + ROAD_W / 2 - 1.5
-    x, y = r * math.cos(th), r * math.sin(th)
-    t = (-math.sin(th), math.cos(th))
-    new_obj("CamperVan", me, coll, (x, y, 0.0), yaw_xy(*t))
 
 
 def build_umbrellas(coll):
@@ -520,6 +523,9 @@ PELOTON_JERSEYS = [
     (0.10, 0.55, 0.25), (0.92, 0.42, 0.08), (0.10, 0.10, 0.13), (0.80, 0.30, 0.60),
 ]
 Q = math.pi * R / 2          # longueur d'un quart d'arc
+PELO_S0 = 24.0               # abscisse de la tête du peloton à l'image 1
+PELO_SPEED = 11.5            # m/s (~41 km/h)
+PELO_HEAD = -18.0            # coureur le plus avancé (échappé), en 'a'
 
 
 def path_pos(s):
@@ -576,29 +582,36 @@ def rider_mesh(team, white_helmet):
     return finish(f"Rider_{team}_{int(white_helmet)}", bm, mats)
 
 
-def peloton_formation(rng, n):
-    """(a, b) = distance derrière la tête, décalage latéral. Forme en 'larme' :
-    étroit devant, large au milieu, effilé derrière + échappés + attardés."""
-    half_max = ROAD_W / 2 - 0.75
+def blob(rng, n, length, a0=0.0, half_max=None):
+    """Nuage de coureurs en forme de 'larme' (étroit devant, large au milieu,
+    effilé derrière), sans chevauchement. (a, b) = distance derrière la tête
+    de course, décalage latéral."""
+    half_max = ROAD_W / 2 - 0.75 if half_max is None else half_max
     pts = []
     tries = 0
     while len(pts) < n and tries < 20000:
         tries += 1
-        a = 28.0 * rng.random() ** 1.2
-        w = 0.9 + (half_max - 0.9) * math.sin(math.pi * min(1.0, (a / 28.0) ** 0.75))
+        a = length * rng.random() ** 1.2
+        w = 0.9 + (half_max - 0.9) * math.sin(math.pi * min(1.0, (a / length) ** 0.75))
         b = rng.uniform(-w, w)
         if all(((a - pa) / 1.75) ** 2 + ((b - pb) / 0.85) ** 2 > 1.0 for pa, pb in pts):
             pts.append((a, b))
-    pts.sort()
+    return sorted((a0 + a, b) for a, b in pts)
+
+
+def peloton_formation(rng, n, n2=16):
+    """Peloton principal + échappés devant + attardés + 2e groupe en retard."""
+    main = blob(rng, n, 28.0)
     breakaway = [(-11.0, 0.3), (-14.5, -0.5), (-18.0, 0.2)]          # 3 échappés devant
     stragglers = [(34.0, 0.4), (37.5, -0.6), (41.0, 0.1), (45.0, -0.3)]
-    return breakaway + pts + stragglers
+    group2 = blob(rng, n2, 16.0, a0=52.0, half_max=2.0) if n2 > 0 else []
+    return breakaway + main + stragglers + group2
 
 
-def build_peloton(coll, rng, frames, fps=24, n=62, speed=11.5):
+def build_peloton(coll, rng, frames, fps=24, n=62, n2=16, speed=PELO_SPEED):
     protos = {}
-    form = peloton_formation(rng, n)
-    s_front0 = 24.0                        # tête du peloton juste après le sommet
+    form = peloton_formation(rng, n, n2)
+    s_front0 = PELO_S0
     pref = bpy.context.preferences.edit
     old_interp = pref.keyframe_new_interpolation_type
     pref.keyframe_new_interpolation_type = "LINEAR"     # vitesse constante
@@ -631,7 +644,59 @@ def build_peloton(coll, rng, frames, fps=24, n=62, speed=11.5):
             else:
                 break
     pref.keyframe_new_interpolation_type = old_interp
-    return len(form)
+    return len(form), max(a for a, _ in form)
+
+def path_s(x, y):
+    """Abscisse curviligne (cf. path_pos) du point de la route le plus proche."""
+    if x >= 0:
+        return Q + x if y >= 0 else -Q - x
+    th = math.atan2(y, x)
+    return R * (math.pi - th) if y >= 0 else -R * (th + math.pi)
+
+
+def animate_crowd(crowd, frames, fps, tail_a, seed):
+    """Les spectateurs sautent de joie, bras levés, quand les coureurs passent
+    devant eux (de l'arrivée de l'échappé jusqu'au départ du dernier groupe)."""
+    rng = random.Random(seed + 101)
+    pref = bpy.context.preferences.edit
+    old = pref.keyframe_new_interpolation_type
+    pref.keyframe_new_interpolation_type = "LINEAR"
+    head_lead = -PELO_HEAD
+    n_anim = 0
+    for o, arms, seated, x, y in crowd.people:
+        sp = path_s(x, y)
+        # fenêtre de joie en images : tête à 10 m avant, dernier coureur 8 m après
+        f0 = 1 + fps * (sp - 10 - PELO_S0 - head_lead) / PELO_SPEED + rng.uniform(0, 4)
+        f1 = 1 + fps * (sp + 8 - PELO_S0 + tail_a) / PELO_SPEED + rng.uniform(-3, 6)
+        f0, f1 = max(1, int(f0)), min(frames, int(f1))
+        if f1 - f0 < 4:
+            continue
+        n_anim += 1
+        amp = rng.uniform(0.02, 0.07) if seated else rng.uniform(0.12, 0.34)
+        period = rng.uniform(9, 15)                    # images par saut
+        ph = rng.uniform(0, math.pi)
+        up = rng.uniform(2.45, 2.95)                   # amplitude bras levés (rad)
+        z0 = o.location.z
+        frames_k = list(range(f0, f1 + 1, 2))
+        if frames_k[-1] != f1:
+            frames_k.append(f1)
+        for f in frames_k:
+            env = min(1.0, (f - f0) / 6.0, (f1 - f) / 8.0 + 0.0)
+            env = max(0.0, env)
+            jump = abs(math.sin(math.pi * (f - f0) / period + ph)) * amp * env
+            o.location.z = z0 + jump
+            o.keyframe_insert("location", index=2, frame=f)
+            for k, arm in enumerate(arms):
+                side = 1 if k == 0 else -1
+                wave = 0.35 * math.sin(2 * math.pi * (f - f0) / period + ph + k * 1.7)
+                arm.rotation_euler.y = -side * (0.12 + env * (up - 0.12 + wave))
+                arm.keyframe_insert("rotation_euler", index=1, frame=f)
+        o.location.z = z0
+        for k, arm in enumerate(arms):                 # retour à la pose repos
+            arm.rotation_euler.y = -(1 if k == 0 else -1) * 0.12
+    pref.keyframe_new_interpolation_type = old
+    return n_anim
+
 
 # --------------------------------------------------------------- scène globale
 def setup_world(sun_coll):
@@ -736,6 +801,8 @@ def main():
                     help="durée du mouvement de caméra en images (0 = caméra fixe)")
     ap.add_argument("--riders", type=int, default=62,
                     help="taille du peloton principal (0 = aucun)")
+    ap.add_argument("--group2", type=int, default=16,
+                    help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
     ap.add_argument("--anim", action="store_true", help="rend toute l'animation")
     ap.add_argument("--res", type=int, nargs=2, default=(1320, 866))
     a = ap.parse_args(argv)
@@ -755,8 +822,8 @@ def main():
     noise.seed_set(a.seed)
     build_terrain(c_terrain)
     build_road(c_road)
-    n = build_crowd(c_crowd, rng, a.crowd_scale)
-    build_van(c_props)
+    crowd = build_crowd(c_crowd, rng, a.crowd_scale)
+    n = crowd.count
     build_umbrellas(c_props)
     build_bikes(c_props)
     build_posts(c_props)
@@ -767,8 +834,11 @@ def main():
     if a.frames > 0:
         animate_camera(a.frames)
     if a.riders > 0:
-        nr = build_peloton(c_peloton, rng, a.frames, n=a.riders)
+        nr, tail_a = build_peloton(c_peloton, rng, a.frames, n=a.riders, n2=a.group2)
         print(f"Peloton : {nr} coureurs")
+        if a.frames > 0:
+            na = animate_crowd(crowd, a.frames, sc.render.fps, tail_a, a.seed)
+            print(f"Spectateurs animés : {na}")
     print(f"Layout prêt : {n} spectateurs")
 
     if a.save:
