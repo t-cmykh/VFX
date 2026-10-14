@@ -1028,6 +1028,18 @@ def apply_camera_fit(cam, fit, frames):
     pref = bpy.context.preferences.edit
     old = pref.keyframe_new_interpolation_type
     pref.keyframe_new_interpolation_type = "LINEAR"
+    if "cams" in fit:                        # calage image par image (x, y, z, cap, inclinaison, focale)
+        cam.data.sensor_fit = "HORIZONTAL"
+        for i, (x, y, z, yaw, pit, f) in enumerate(fit["cams"]):
+            fwd = Vector((math.cos(pit) * math.cos(yaw), math.cos(pit) * math.sin(yaw), -math.sin(pit)))
+            cam.location = (x, y, z)
+            cam.rotation_euler = fwd.to_track_quat("-Z", "Y").to_euler()
+            cam.data.lens = f
+            cam.keyframe_insert("location", frame=i + 1)
+            cam.keyframe_insert("rotation_euler", frame=i + 1)
+            cam.data.keyframe_insert("lens", frame=i + 1)
+        pref.keyframe_new_interpolation_type = old
+        return
     for frame, c in ((1, fit["cam1"]), (max(frames, 2), fit["camN"])):
         x, y, z, yaw, pit = c
         fwd = Vector((math.cos(pit) * math.cos(yaw), math.cos(pit) * math.sin(yaw), -math.sin(pit)))
