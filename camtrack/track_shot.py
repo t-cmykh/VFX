@@ -10,6 +10,7 @@ ap.add_argument("--start", type=int, default=1)
 ap.add_argument("--end", type=int, default=0, help="0 = tout le clip")
 ap.add_argument("--sensor", type=float, default=6.17, help="largeur capteur mm (drone 1/2.3\")")
 ap.add_argument("--focal", type=float, default=4.5, help="focale mm réelle")
+ap.add_argument("--redetect", type=int, default=30, help="re-détection tous les N images")
 ap.add_argument("--max_error", type=float, default=2.0)
 a = ap.parse_args(sys.argv[sys.argv.index("--")+1:] if "--" in sys.argv else sys.argv[1:])
 
@@ -29,7 +30,7 @@ cam.sensor_width = a.sensor
 cam.focal_length = a.focal
 cam.units = 'MILLIMETERS'
 s = clip.tracking.settings
-s.default_motion_model = 'Perspective'
+s.default_motion_model = 'Affine'
 s.default_pattern_size = 21
 s.default_search_size = 121
 s.default_correlation_min = 0.75
@@ -59,13 +60,11 @@ with bpy.context.temp_override(**ctx):
     bpy.ops.clip.select_all(action='SELECT')
     bpy.ops.clip.track_markers(backwards=False, sequence=True)
     # re-détection périodique pour compenser les tracks perdus
-    for f in range(a.start + 120, end, 120):
+    for f in range(a.start + a.redetect, end, a.redetect):
         scn.frame_set(f)
         bpy.ops.clip.select_all(action='DESELECT')
         bpy.ops.clip.detect_features(threshold=0.1, min_distance=60, margin=20, placement='FRAME')
         bpy.ops.clip.track_markers(backwards=False, sequence=True)
-        bpy.ops.clip.select_all(action='SELECT')
-        bpy.ops.clip.track_markers(backwards=True, sequence=True)
     scn.frame_set(a.start)
     bpy.ops.clip.clean_tracks(frames=25, error=0.0, action='DELETE_TRACK')
     print("tracks après nettoyage:", len(clip.tracking.tracks))
