@@ -15,6 +15,8 @@ Options (après le "--") :
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
+    --radius R          rayon de l'épingle ; --camera-fit F.json : caméra calée sur une vidéo
+    --transparent       fond transparent + shadow catcher (incrustation) ; --no-hero : sans humain central
     --hero              décor + un humain riggé simple au centre du monde (0, 0)
     --human             foule d'humains riggés en liesse (remplace --stick), + humain central
     --stick             foule en bonhommes bâtons en liesse (applaudissent, sautent, crient), sans coureurs
@@ -37,6 +39,7 @@ from mathutils import Matrix, Vector, noise
 
 # ----------------------------------------------------------------- paramètres
 R = 12.0            # rayon de l'axe de l'épingle
+FIT_GROUND = False  # sol simplifié (pente douce) quand la caméra est calée sur une vidéo
 ROAD_W = 6.5        # largeur de chaussée
 ROAD_Z = 0.04       # la route flotte juste au-dessus du terrain (anti z-fight)
 ROAD_LEN = 110.0    # longueur des deux branches droites (vers +X)
@@ -99,6 +102,9 @@ def terrain_h(x, y):
     else:
         dout = r - R
         k = y / math.hypot(y, 3.0)
+    if FIT_GROUND:      # sol bas et lisse : sert juste de réceptacle d'ombres, sans masquer la foule
+        h = (0.18 * dout if k < 0 else -0.15 * dout) if dout > 0 else 0.0
+        return h * smoothstep(ROAD_W / 2 + 0.5, ROAD_W / 2 + 6.0, road_dist(x, y))
     wnoise = smoothstep(-R, R, dout) * 0.7 + 0.3
     small = (noise.noise(Vector((x * 0.07, y * 0.07, 0))) * 0.45
              + noise.noise(Vector((x * 0.25, y * 0.25, 3))) * 0.12) * wnoise
@@ -479,7 +485,7 @@ def build_crowd(coll, rng, scale, stick=False, human=False):
         return r * math.cos(th), r * math.sin(th)
     c.fill(N(60), arc, sit_p=0.25)
     # 3) bord côté caméra de la branche basse (spectateurs assis sur l'herbe)
-    c.fill(N(55), lambda: (u(4, 55), -(R + edge + u(0, 3.5))), sit_p=0.65)
+    c.fill(N(55 if LOWER_X1 < 60 else 95), lambda: (u(4, LOWER_X1), -(R + edge + u(0, 3.5))), sit_p=0.65)
     # 4) groupes sur l'îlot herbeux entre les deux branches
     for (gx, gy, rad, n, sp) in ((9, -3.0, 5.0, 55, 0.5), (21, 2.0, 4.5, 40, 0.45),
                                  (36, -4.0, 4.0, 24, 0.7), (60, 1.0, 5.0, 22, 0.4),
@@ -494,6 +500,34 @@ def build_crowd(coll, rng, scale, stick=False, human=False):
     # 6) quelques personnes sur la chaussée
     c.fill(N(14), lambda: (u(25, 60), -R + u(-ROAD_W / 2 + 0.6, ROAD_W / 2 - 0.6)),
            sit_p=0.0, on_road=True)
+    return c
+
+
+def build_crowd_fit(coll, rng, scale, stick=False, human=False):
+    """Foule concentrée dans la fenêtre visible d'une caméra calée sur une vidéo
+    (téléobjectif : on ne voit que l'apex et ~35 m de route de chaque côté)."""
+    c = Crowd(coll, rng, stick, human)
+    u = rng.uniform
+    edge = ROAD_W / 2 + 0.35
+    N = lambda n: max(1, int(n * scale))
+    # bord extérieur de la branche haute (au fond)
+    c.fill(N(70), lambda: (u(-2, 26), R + edge + u(0, 3.6)), sit_p=0.12)
+    # arc autour du sommet de l'épingle
+    def arc():
+        th = math.radians(u(95, 240))
+        r = R + edge + u(0, 3.6)
+        return r * math.cos(th), r * math.sin(th)
+    c.fill(N(85), arc, sit_p=0.25)
+    # bord bas (côté caméra), assis et debout sur le talus
+    c.fill(N(120), lambda: (u(0, 40), -(R + edge + u(0, 4.0))), sit_p=0.5)
+    # îlot herbeux entre les deux branches
+    for gx, gy, rad, n, sp in ((6, -0.5, 3.8, 34, 0.4), (17, 1.0, 3.5, 28, 0.4),
+                               (28, -1.5, 3.2, 20, 0.5)):
+        def disc(gx=gx, gy=gy, rad=rad):
+            a = u(0, 2 * math.pi)
+            r = rad * math.sqrt(rng.random())
+            return gx + r * math.cos(a), gy + r * math.sin(a)
+        c.fill(N(n), disc, sit_p=sp)
     return c
 
 
@@ -570,6 +604,7 @@ PELOTON_JERSEYS = [
     (0.10, 0.55, 0.25), (0.92, 0.42, 0.08), (0.10, 0.10, 0.13), (0.80, 0.30, 0.60),
 ]
 Q = math.pi * R / 2          # longueur d'un quart d'arc
+LOWER_X1 = 55.0              # extension x du bord bas de la route (foule)
 PELO_S0 = 24.0               # abscisse de la tête du peloton à l'image 1
 PELO_SPEED = 11.5            # m/s (~41 km/h)
 PELO_HEAD = -18.0            # coureur le plus avancé (échappé), en 'a'
@@ -985,6 +1020,24 @@ def animate_crowd_human(crowd, frames, fps, seed, variants=6):
     return counts
 
 
+def apply_camera_fit(cam, fit, frames):
+    """Caméra calée sur une vidéo : pose de la 1re et de la dernière image
+    (x, y, z, cap, inclinaison) + focale, interpolées linéairement."""
+    cam.data.lens = fit["f"]
+    cam.data.sensor_fit = "HORIZONTAL"
+    pref = bpy.context.preferences.edit
+    old = pref.keyframe_new_interpolation_type
+    pref.keyframe_new_interpolation_type = "LINEAR"
+    for frame, c in ((1, fit["cam1"]), (max(frames, 2), fit["camN"])):
+        x, y, z, yaw, pit = c
+        fwd = Vector((math.cos(pit) * math.cos(yaw), math.cos(pit) * math.sin(yaw), -math.sin(pit)))
+        cam.location = (x, y, z)
+        cam.rotation_euler = fwd.to_track_quat("-Z", "Y").to_euler()
+        cam.keyframe_insert("location", frame=frame)
+        cam.keyframe_insert("rotation_euler", frame=frame)
+    pref.keyframe_new_interpolation_type = old
+
+
 def build_hero(coll, frames, fps, rng):
     """Un humain riggé au centre du monde (0, 0)."""
     z = terrain_h(0.0, 0.0)
@@ -1098,6 +1151,11 @@ def main():
                     help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--group2", type=int, default=16,
                     help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
+    ap.add_argument("--radius", type=float, help="rayon de l'épingle (m)")
+    ap.add_argument("--camera-fit", help="JSON de calage caméra sur une vidéo (cam1, camN, f)")
+    ap.add_argument("--no-hero", action="store_true", help="pas d'humain central")
+    ap.add_argument("--transparent", action="store_true",
+                    help="fond transparent + sol en shadow catcher (pour incruster la foule sur une vidéo)")
     ap.add_argument("--hero", action="store_true",
                     help="décor + un seul humain riggé au centre du monde (0, 0)")
     ap.add_argument("--human", action="store_true",
@@ -1110,6 +1168,19 @@ def main():
     ap.add_argument("--res", type=int, nargs=2, default=(1320, 866))
     a = ap.parse_args(argv)
 
+    global R, Q, LOWER_X1, FIT_GROUND
+    if a.radius:
+        R = a.radius
+        Q = math.pi * R / 2
+    fit = None
+    if a.camera_fit:
+        import json
+        with open(a.camera_fit) as fh:
+            fit = json.load(fh)
+        R = fit.get("R", R)
+        Q = math.pi * R / 2
+        LOWER_X1 = 100.0
+        FIT_GROUND = True
     bpy.ops.wm.read_factory_settings(use_empty=True)
     sc = bpy.context.scene
 
@@ -1129,18 +1200,27 @@ def main():
     if a.hero:
         a.set_only = True
     if not a.set_only:
-        crowd = build_crowd(c_crowd, rng, a.crowd_scale, stick=a.stick, human=a.human)
+        crowd = (build_crowd_fit if fit else build_crowd)(
+            c_crowd, rng, a.crowd_scale, stick=a.stick, human=a.human)
         n = crowd.count
-        build_umbrellas(c_props)
-        build_bikes(c_props)
-        build_posts(c_props)
-        build_flag(c_props)
+        if not fit:                              # incrustation : pas d'accessoires
+            build_umbrellas(c_props)
+            build_bikes(c_props)
+            build_posts(c_props)
+            build_flag(c_props)
     setup_world(c_light)
     setup_camera(c_cam, a.reference)
     setup_render(*a.res)
-    if a.frames > 0:
+    if fit:
+        apply_camera_fit(sc.camera, fit, a.frames)
+    elif a.frames > 0:
         animate_camera(a.frames)
-    if a.hero or a.human:
+    if a.transparent:
+        sc.render.film_transparent = True
+        sc.render.image_settings.color_mode = "RGBA"
+        for ob in list(c_terrain.objects) + list(c_road.objects):
+            ob.is_shadow_catcher = True
+    if (a.hero or a.human) and not a.no_hero:
         build_hero(c_props, a.frames, sc.render.fps, random.Random(a.seed + 7))
     if a.human and not a.set_only and a.frames > 0:
         print('Foule humains :', animate_crowd_human(crowd, a.frames, sc.render.fps, a.seed))
