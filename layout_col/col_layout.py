@@ -15,6 +15,7 @@ Options (après le "--") :
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
+    --set-only          décor seul (sans foule, coureurs ni accessoires)
     --anim              avec --render : rend toute l'animation (PNG numérotés)
     --res W H           résolution (défaut 1320 866 = format de la photo)
 
@@ -803,6 +804,8 @@ def main():
                     help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--group2", type=int, default=16,
                     help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
+    ap.add_argument("--set-only", action="store_true",
+                    help="décor seul : terrain, route, ciel, caméra (sans foule, coureurs ni accessoires)")
     ap.add_argument("--anim", action="store_true", help="rend toute l'animation")
     ap.add_argument("--res", type=int, nargs=2, default=(1320, 866))
     a = ap.parse_args(argv)
@@ -822,18 +825,20 @@ def main():
     noise.seed_set(a.seed)
     build_terrain(c_terrain)
     build_road(c_road)
-    crowd = build_crowd(c_crowd, rng, a.crowd_scale)
-    n = crowd.count
-    build_umbrellas(c_props)
-    build_bikes(c_props)
-    build_posts(c_props)
-    build_flag(c_props)
+    crowd, n = None, 0
+    if not a.set_only:
+        crowd = build_crowd(c_crowd, rng, a.crowd_scale)
+        n = crowd.count
+        build_umbrellas(c_props)
+        build_bikes(c_props)
+        build_posts(c_props)
+        build_flag(c_props)
     setup_world(c_light)
     setup_camera(c_cam, a.reference)
     setup_render(*a.res)
     if a.frames > 0:
         animate_camera(a.frames)
-    if a.riders > 0:
+    if a.riders > 0 and not a.set_only:
         nr, tail_a = build_peloton(c_peloton, rng, a.frames, n=a.riders, n2=a.group2)
         print(f"Peloton : {nr} coureurs")
         if a.frames > 0:
