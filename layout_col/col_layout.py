@@ -15,6 +15,7 @@ Options (après le "--") :
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
+    --stick             foule en bonhommes bâtons en liesse (applaudissent, sautent, crient), sans coureurs
     --set-only          décor seul (sans foule, coureurs ni accessoires)
     --anim              avec --render : rend toute l'animation (PNG numérotés)
     --res W H           résolution (défaut 1320 866 = format de la photo)
@@ -357,9 +358,36 @@ def arm_mesh(shirt_i):
     return finish(f"Arm_{shirt_i}", bm, mats)
 
 
+def stick_mesh(seated):
+    """Bonhomme bâton : tête, tronc et jambes en traits noirs (bras à part)."""
+    bm = bmesh.new()
+    mats = [mat("Stick", (0.02, 0.02, 0.02), 0.9)]
+    r = 0.045
+    if not seated:
+        add_sphere(bm, 0.13, (0, 0, 1.62), 0)
+        add_limb(bm, (0, 0, 0.92), (0, 0, 1.45), r, r, 0, seg=6)            # tronc
+        add_limb(bm, (0, 0, 0.92), (-0.14, 0, 0.0), r, r, 0, seg=6)         # jambes
+        add_limb(bm, (0, 0, 0.92), (0.14, 0, 0.0), r, r, 0, seg=6)
+    else:
+        add_sphere(bm, 0.13, (0, -0.02, 0.9), 0)
+        add_limb(bm, (0, 0, 0.12), (0, -0.02, 0.68), r, r, 0, seg=6)
+        add_limb(bm, (0, 0, 0.12), (-0.12, 0.6, 0.12), r, r, 0, seg=6)      # jambes tendues
+        add_limb(bm, (0, 0, 0.12), (0.12, 0.6, 0.12), r, r, 0, seg=6)
+    return finish(f"Stick_{int(seated)}", bm, mats)
+
+
+def stick_arm_mesh():
+    bm = bmesh.new()
+    mats = [mat("Stick", (0.02, 0.02, 0.02), 0.9)]
+    add_limb(bm, (0, 0, 0), (0, 0, -0.62), 0.04, 0.04, 0, seg=6)
+    add_sphere(bm, 0.06, (0, 0, -0.64), 0)                                   # main
+    return finish("StickArm", bm, mats)
+
+
 class Crowd:
-    def __init__(self, coll, rng):
+    def __init__(self, coll, rng, stick=False):
         self.coll, self.rng = coll, rng
+        self.stick = stick
         self.protos = {}
         self.arm_protos = {}
         self.people = []          # (objet, bras G/D, assis, x, y)
@@ -383,7 +411,10 @@ class Crowd:
         seated = rng.random() < sit_p
         hat = rng.randint(1, 3) if rng.random() < hat_p else 0
         shirt = rng.randrange(len(PALETTE_SHIRTS))
-        me = self.proto(shirt, seated, hat)
+        if self.stick:
+            me = self.protos.setdefault(("stick", seated), stick_mesh(seated))
+        else:
+            me = self.proto(shirt, seated, hat)
         z = terrain_h(x, y) - 0.02
         if face_road:
             cx_, cy_ = nearest_center(x, y)
@@ -393,12 +424,13 @@ class Crowd:
         o = new_obj(f"Person{self.count:04d}", me, self.coll, (x, y, z), yaw)
         s = rng.uniform(0.9, 1.08)
         o.scale = (s, s, s)
-        if shirt not in self.arm_protos:
-            self.arm_protos[shirt] = arm_mesh(shirt)
+        akey = "stick" if self.stick else shirt
+        if akey not in self.arm_protos:
+            self.arm_protos[akey] = stick_arm_mesh() if self.stick else arm_mesh(shirt)
         arms = []
         for side in (1, -1):
             arm = bpy.data.objects.new(f"{o.name}_arm{'R' if side > 0 else 'L'}",
-                                       self.arm_protos[shirt])
+                                       self.arm_protos[akey])
             self.coll.objects.link(arm)
             arm.parent = o
             arm.location = (side * 0.24, 0, 0.68 if seated else 1.42)
@@ -418,8 +450,8 @@ class Crowd:
                 done += 1
 
 
-def build_crowd(coll, rng, scale):
-    c = Crowd(coll, rng)
+def build_crowd(coll, rng, scale, stick=False):
+    c = Crowd(coll, rng, stick)
     u = rng.uniform
     edge = ROAD_W / 2 + 0.35
     N = lambda n: max(1, int(n * scale))
@@ -699,6 +731,51 @@ def animate_crowd(crowd, frames, fps, tail_a, seed):
     return n_anim
 
 
+def animate_crowd_stick(crowd, frames, fps, seed):
+    """Foule de bonhommes bâtons en liesse sur toute la durée : chacun applaudit,
+    saute bras levés ou crie (mains en porte-voix, buste qui se cambre)."""
+    rng = random.Random(seed + 202)
+    pref = bpy.context.preferences.edit
+    old = pref.keyframe_new_interpolation_type
+    pref.keyframe_new_interpolation_type = "LINEAR"
+    kinds = {"clap": 0, "cheer": 0, "shout": 0}
+    for o, arms, seated, x, y in crowd.people:
+        r = rng.random()
+        kind = "clap" if r < 0.34 else ("cheer" if r < 0.80 else "shout")
+        kinds[kind] += 1
+        ph = rng.uniform(0, 6.28)
+        fr = rng.uniform(1.6, 2.3)                    # sauts / s
+        amp = rng.uniform(0.02, 0.05) if seated else rng.uniform(0.15, 0.38)
+        if kind == "clap":
+            amp *= 0.35
+        z0 = o.location.z
+        for f in range(1, frames + 1):
+            t = (f - 1) / fps
+            jump = abs(math.sin(math.pi * fr * t + ph)) * amp
+            o.location.z = z0 + jump
+            o.keyframe_insert("location", index=2, frame=f)
+            if kind == "shout":
+                lean = -0.22 * (0.5 + 0.5 * math.sin(2 * math.pi * 1.3 * t + ph))
+                o.rotation_euler.x = lean
+                o.keyframe_insert("rotation_euler", index=0, frame=f)
+            for k, arm in enumerate(arms):
+                side = 1 if k == 0 else -1            # +1 = bras droit (x > 0)
+                if kind == "cheer":                   # bras en V qui s'agitent
+                    wv = 0.4 * math.sin(2 * math.pi * 2.0 * t + ph + k * 1.9)
+                    arm.rotation_euler = (0, -side * (2.55 + wv), 0)
+                elif kind == "clap":                  # mains devant, qui se rejoignent
+                    clap = 0.5 + 0.5 * math.sin(2 * math.pi * 2.7 * t + ph)
+                    arm.rotation_euler = (1.35, 0, side * (0.08 + 0.30 * clap))
+                else:                                 # porte-voix devant la bouche
+                    wv = 0.08 * math.sin(2 * math.pi * 1.3 * t + ph)
+                    arm.rotation_euler = (2.45 + wv, 0, side * 0.42)
+                arm.keyframe_insert("rotation_euler", frame=f)
+        o.location.z = z0
+        o.rotation_euler.x = 0
+    pref.keyframe_new_interpolation_type = old
+    return kinds
+
+
 # --------------------------------------------------------------- scène globale
 def setup_world(sun_coll):
     w = bpy.data.worlds.new("World")
@@ -804,6 +881,8 @@ def main():
                     help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--group2", type=int, default=16,
                     help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
+    ap.add_argument("--stick", action="store_true",
+                    help="foule en bonhommes bâtons qui applaudissent, sautent et crient (sans les coureurs)")
     ap.add_argument("--set-only", action="store_true",
                     help="décor seul : terrain, route, ciel, caméra (sans foule, coureurs ni accessoires)")
     ap.add_argument("--anim", action="store_true", help="rend toute l'animation")
@@ -827,7 +906,7 @@ def main():
     build_road(c_road)
     crowd, n = None, 0
     if not a.set_only:
-        crowd = build_crowd(c_crowd, rng, a.crowd_scale)
+        crowd = build_crowd(c_crowd, rng, a.crowd_scale, stick=a.stick)
         n = crowd.count
         build_umbrellas(c_props)
         build_bikes(c_props)
@@ -838,7 +917,9 @@ def main():
     setup_render(*a.res)
     if a.frames > 0:
         animate_camera(a.frames)
-    if a.riders > 0 and not a.set_only:
+    if a.stick and not a.set_only and a.frames > 0:
+        print('Foule bâtons :', animate_crowd_stick(crowd, a.frames, sc.render.fps, a.seed))
+    elif a.riders > 0 and not a.set_only:
         nr, tail_a = build_peloton(c_peloton, rng, a.frames, n=a.riders, n2=a.group2)
         print(f"Peloton : {nr} coureurs")
         if a.frames > 0:
