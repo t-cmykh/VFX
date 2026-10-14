@@ -15,6 +15,8 @@ Options (après le "--") :
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
+    --hero              décor + un humain riggé simple au centre du monde (0, 0)
+    --human             foule d'humains riggés en liesse (remplace --stick), + humain central
     --stick             foule en bonhommes bâtons en liesse (applaudissent, sautent, crient), sans coureurs
     --set-only          décor seul (sans foule, coureurs ni accessoires)
     --anim              avec --render : rend toute l'animation (PNG numérotés)
@@ -206,6 +208,7 @@ def add_cyl(bm, r1, r2, depth, loc, mi, rot=None, seg=8):
     res = bmesh.ops.create_cone(bm, cap_ends=True, segments=seg, radius1=r1,
                                 radius2=r2, depth=depth, matrix=m)
     tag(res["verts"], mi)
+    return res["verts"]
 
 
 def add_box(bm, size, loc, mi, rot=None):
@@ -215,12 +218,14 @@ def add_box(bm, size, loc, mi, rot=None):
     m = m @ Matrix.Diagonal(Vector((size[0], size[1], size[2], 1.0)))
     res = bmesh.ops.create_cube(bm, size=1.0, matrix=m)
     tag(res["verts"], mi)
+    return res["verts"]
 
 
 def add_sphere(bm, r, loc, mi, scale=(1, 1, 1)):
     m = Matrix.Translation(loc) @ Matrix.Diagonal(Vector((*scale, 1.0)))
     res = bmesh.ops.create_uvsphere(bm, u_segments=8, v_segments=6, radius=r, matrix=m)
     tag(res["verts"], mi)
+    return res["verts"]
 
 
 def add_torus(bm, major, minor, loc, mi, rot=None, n=20, m_=6):
@@ -385,9 +390,10 @@ def stick_arm_mesh():
 
 
 class Crowd:
-    def __init__(self, coll, rng, stick=False):
+    def __init__(self, coll, rng, stick=False, human=False):
         self.coll, self.rng = coll, rng
         self.stick = stick
+        self.human = human
         self.protos = {}
         self.arm_protos = {}
         self.people = []          # (objet, bras G/D, assis, x, y)
@@ -404,6 +410,8 @@ class Crowd:
         rng = self.rng
         if not on_road and road_dist(x, y) < ROAD_W / 2 + 0.1:
             return False
+        if math.hypot(x, y) < 1.4:                      # centre réservé au humain de référence
+            return False
         key = (int(x / 0.55), int(y / 0.55))
         if key in self.taken:
             return False
@@ -411,16 +419,22 @@ class Crowd:
         seated = rng.random() < sit_p
         hat = rng.randint(1, 3) if rng.random() < hat_p else 0
         shirt = rng.randrange(len(PALETTE_SHIRTS))
-        if self.stick:
-            me = self.protos.setdefault(("stick", seated), stick_mesh(seated))
-        else:
-            me = self.proto(shirt, seated, hat)
         z = terrain_h(x, y) - 0.02
         if face_road:
             cx_, cy_ = nearest_center(x, y)
             yaw = math.atan2(-(cx_ - x), (cy_ - y)) + rng.uniform(-0.7, 0.7)
         else:
             yaw = rng.uniform(0, 2 * math.pi)
+        if self.human:
+            o = human_instance(f"Human{self.count:04d}", self.coll, shirt, (x, y, z), yaw,
+                               rng.uniform(0.92, 1.08))
+            self.people.append((o, [], seated, x, y))
+            self.count += 1
+            return True
+        if self.stick:
+            me = self.protos.setdefault(("stick", seated), stick_mesh(seated))
+        else:
+            me = self.proto(shirt, seated, hat)
         o = new_obj(f"Person{self.count:04d}", me, self.coll, (x, y, z), yaw)
         s = rng.uniform(0.9, 1.08)
         o.scale = (s, s, s)
@@ -450,8 +464,8 @@ class Crowd:
                 done += 1
 
 
-def build_crowd(coll, rng, scale, stick=False):
-    c = Crowd(coll, rng, stick)
+def build_crowd(coll, rng, scale, stick=False, human=False):
+    c = Crowd(coll, rng, stick, human)
     u = rng.uniform
     edge = ROAD_W / 2 + 0.35
     N = lambda n: max(1, int(n * scale))
@@ -577,7 +591,7 @@ def add_limb(bm, p0, p1, r0, r1, mi, seg=6):
     p0, p1 = Vector(p0), Vector(p1)
     d = p1 - p0
     rot = d.to_track_quat("Z", "X").to_matrix()
-    add_cyl(bm, r0, r1, d.length, (p0 + p1) / 2, mi, rot=rot, seg=seg)
+    return add_cyl(bm, r0, r1, d.length, (p0 + p1) / 2, mi, rot=rot, seg=seg)
 
 
 def rider_mesh(team, white_helmet):
@@ -776,6 +790,209 @@ def animate_crowd_stick(crowd, frames, fps, seed):
     return kinds
 
 
+
+# ------------------------------------------------------- humain simple + rig
+# Squelette minimal (rotations en coordonnées armature, le corps regarde +Y).
+BONES = [  # (nom, parent, tête, queue)
+    ("hips", None, (0, 0, 0.95), (0, 0, 1.05)),
+    ("spine", "hips", (0, 0, 1.05), (0, 0, 1.25)),
+    ("chest", "spine", (0, 0, 1.25), (0, 0, 1.45)),
+    ("neck", "chest", (0, 0, 1.45), (0, 0, 1.55)),
+    ("head", "neck", (0, 0, 1.55), (0, 0, 1.76)),
+] + [b for sd, sx in (("L", -1), ("R", 1)) for b in (
+    (f"upper_arm.{sd}", "chest", (sx * 0.21, 0, 1.42), (sx * 0.21, 0, 1.15)),
+    (f"forearm.{sd}", f"upper_arm.{sd}", (sx * 0.21, 0, 1.15), (sx * 0.21, 0, 0.90)),
+    (f"hand.{sd}", f"forearm.{sd}", (sx * 0.21, 0, 0.90), (sx * 0.21, 0, 0.78)),
+    (f"thigh.{sd}", "hips", (sx * 0.10, 0, 0.95), (sx * 0.10, 0, 0.52)),
+    (f"shin.{sd}", f"thigh.{sd}", (sx * 0.10, 0, 0.52), (sx * 0.10, 0, 0.10)),
+    (f"foot.{sd}", f"shin.{sd}", (sx * 0.10, 0, 0.10), (sx * 0.10, 0.16, 0.04)),
+)]
+BONE_IDX = {b[0]: i for i, b in enumerate(BONES)}
+_human = {}                      # cache : armature, maillons par chemise, actions
+
+
+def human_armature():
+    if "arm" in _human:
+        return _human["arm"]
+    ad = bpy.data.armatures.new("HumanRig")
+    tmp = bpy.data.objects.new("HumanRig_template", ad)
+    bpy.context.scene.collection.objects.link(tmp)
+    bpy.context.view_layer.objects.active = tmp
+    bpy.ops.object.mode_set(mode="EDIT")
+    for name, parent, head, tail in BONES:
+        b = ad.edit_bones.new(name)
+        b.head, b.tail = head, tail
+        if parent:
+            b.parent = ad.edit_bones[parent]
+    bpy.ops.object.mode_set(mode="OBJECT")
+    tmp.hide_render = tmp.hide_viewport = True
+    _human["arm"] = ad
+    _human["tmp"] = tmp
+    return ad
+
+
+def human_mesh(shirt_i):
+    """Corps low-poly en pièces rigides pondérées à 100 % sur un os."""
+    key = ("mesh", shirt_i)
+    if key in _human:
+        return _human[key]
+    bm = bmesh.new()
+    dl = bm.verts.layers.deform.verify()
+    mats = [mat(f"HShirt{shirt_i}", PALETTE_SHIRTS[shirt_i], 0.85),
+            mat("HSkin", (0.80, 0.60, 0.48), 0.7),
+            mat("HPants", (0.12, 0.14, 0.22), 0.9),
+            mat("HShoes", (0.08, 0.08, 0.08), 0.8)]
+
+    def w(verts, bone):
+        for v in verts:
+            v[dl][BONE_IDX[bone]] = 1.0
+
+    w(add_box(bm, (0.32, 0.20, 0.17), (0, 0, 1.00), 2), "hips")
+    w(add_box(bm, (0.32, 0.19, 0.22), (0, 0, 1.16), 0), "spine")
+    w(add_box(bm, (0.38, 0.21, 0.26), (0, 0, 1.37), 0), "chest")
+    w(add_cyl(bm, 0.055, 0.055, 0.12, (0, 0, 1.52), 1, seg=8), "neck")
+    w(add_sphere(bm, 0.115, (0, 0.01, 1.66), 1, (1, 1.05, 1.18)), "head")
+    for sd, sx in (("L", -1), ("R", 1)):
+        w(add_sphere(bm, 0.065, (sx * 0.21, 0, 1.42), 0), f"upper_arm.{sd}")
+        w(add_limb(bm, (sx * 0.21, 0, 1.42), (sx * 0.21, 0, 1.15), 0.055, 0.047, 0), f"upper_arm.{sd}")
+        w(add_sphere(bm, 0.05, (sx * 0.21, 0, 1.15), 1), f"forearm.{sd}")
+        w(add_limb(bm, (sx * 0.21, 0, 1.15), (sx * 0.21, 0, 0.90), 0.046, 0.038, 1), f"forearm.{sd}")
+        w(add_sphere(bm, 0.05, (sx * 0.21, 0, 0.84), 1, (1, 1, 1.2)), f"hand.{sd}")
+        w(add_sphere(bm, 0.085, (sx * 0.10, 0, 0.95), 2), f"thigh.{sd}")
+        w(add_limb(bm, (sx * 0.10, 0, 0.95), (sx * 0.10, 0, 0.52), 0.082, 0.062, 2), f"thigh.{sd}")
+        w(add_sphere(bm, 0.062, (sx * 0.10, 0, 0.52), 2), f"shin.{sd}")
+        w(add_limb(bm, (sx * 0.10, 0, 0.52), (sx * 0.10, 0, 0.10), 0.06, 0.045, 2), f"shin.{sd}")
+        w(add_box(bm, (0.10, 0.25, 0.07), (sx * 0.10, 0.06, 0.045), 3), f"foot.{sd}")
+    me = finish(f"HumanBody_{shirt_i}", bm, mats)
+    _human[key] = me
+    return me
+
+
+def human_instance(name, coll, shirt_i, loc, yaw, scale=1.0):
+    """Armature + corps (liés à la même donnée), prêts à recevoir une action."""
+    ad = human_armature()
+    me = human_mesh(shirt_i)
+    arm = bpy.data.objects.new(name, ad)
+    coll.objects.link(arm)
+    arm.location, arm.rotation_euler, arm.scale = loc, (0, 0, yaw), (scale,) * 3
+    body = bpy.data.objects.new(name + "_body", me)
+    coll.objects.link(body)
+    body.parent = arm
+    for b in BONES:
+        body.vertex_groups.new(name=b[0])
+    mod = body.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
+    return arm
+
+
+def _rx(a): return Matrix.Rotation(a, 3, "X")
+def _ry(a): return Matrix.Rotation(a, 3, "Y")
+def _rz(a): return Matrix.Rotation(a, 3, "Z")
+
+
+def _pose(tmp, bone, rot=None, loc=None, frame=1):
+    """Applique une rotation / translation exprimée dans l'espace armature."""
+    pb = tmp.pose.bones[bone]
+    pb.rotation_mode = "QUATERNION"
+    r = pb.bone.matrix_local.to_3x3()
+    pb.rotation_quaternion = (r.transposed() @ (rot or Matrix.Identity(3)) @ r).to_quaternion()
+    pb.keyframe_insert("rotation_quaternion", frame=frame)
+    if loc is not None:
+        pb.location = r.transposed() @ Vector(loc)
+        pb.keyframe_insert("location", frame=frame)
+
+
+def _new_action(name):
+    return bpy.data.actions.new(name)
+
+
+def human_action(kind, seated, frames, fps, rng):
+    """Cycle d'animation de joie : clap / cheer / shout (+ pose assise)."""
+    tmp = human_armature() and _human["tmp"]
+    act = _new_action(f"H_{kind}_{'sit' if seated else 'stand'}")
+    ad = tmp.animation_data_create()
+    ad.action = act
+    ph = rng.uniform(0, 6.28)
+    fr = rng.uniform(1.6, 2.3)                       # sauts / s
+    amp = rng.uniform(0.02, 0.05) if seated else rng.uniform(0.12, 0.30)
+    if kind == "clap":
+        amp *= 0.4
+    for f in range(1, frames + 1):
+        t = (f - 1) / fps
+        j = abs(math.sin(math.pi * fr * t + ph))
+        jump = j * amp
+        crouch = (1 - j) if not seated else 0.0
+        hips_z = -0.85 if seated else (jump - 0.07 * crouch)
+        _pose(tmp, "hips", loc=(0, 0, hips_z), frame=f)
+        if seated:
+            for sd in ("L", "R"):
+                _pose(tmp, f"thigh.{sd}", _rx(1.45), frame=f)
+                _pose(tmp, f"foot.{sd}", _rx(-0.3), frame=f)
+        else:
+            for sd in ("L", "R"):
+                _pose(tmp, f"thigh.{sd}", _rx(0.30 * crouch), frame=f)
+                _pose(tmp, f"shin.{sd}", _rx(-0.6 * crouch), frame=f)
+        lean = 0.5 + 0.5 * math.sin(2 * math.pi * 1.3 * t + ph)
+        if kind == "shout":
+            _pose(tmp, "chest", _rx(0.20 * lean), frame=f)
+            _pose(tmp, "head", _rx(0.28 * lean), frame=f)
+        for sd, sx in (("L", -1), ("R", 1)):
+            k = 0 if sx > 0 else 1
+            if kind == "cheer":                      # bras en V qui s'agitent
+                wv = 0.40 * math.sin(2 * math.pi * 2.0 * t + ph + k * 1.9)
+                _pose(tmp, f"upper_arm.{sd}", _ry(-sx * (2.45 + wv)), frame=f)
+                _pose(tmp, f"forearm.{sd}", _rx(0.25 + 0.25 * math.sin(6.0 * t + ph)), frame=f)
+            elif kind == "clap":                     # mains devant qui se rejoignent
+                clap = 0.5 + 0.5 * math.sin(2 * math.pi * 2.7 * t + ph)
+                _pose(tmp, f"upper_arm.{sd}", _rz(sx * (0.10 + 0.22 * clap)) @ _rx(0.95), frame=f)
+                _pose(tmp, f"forearm.{sd}", _rx(0.75), frame=f)
+            else:                                    # porte-voix devant la bouche
+                wv = 0.08 * math.sin(2 * math.pi * 1.3 * t + ph)
+                _pose(tmp, f"upper_arm.{sd}", _rz(sx * 0.30) @ _rx(0.80 + wv), frame=f)
+                _pose(tmp, f"forearm.{sd}", _rx(1.95), frame=f)
+    ad.action = None
+    return act
+
+
+def assign_action(obj, act):
+    ad = obj.animation_data_create()
+    ad.action = act
+    slots = getattr(act, "slots", None)
+    if slots and hasattr(ad, "action_slot"):         # Blender 4.4+ : actions à slots
+        try:
+            ad.action_slot = slots[0]
+        except Exception:
+            pass
+
+
+def animate_crowd_human(crowd, frames, fps, seed, variants=6):
+    """Remplace l'animation bâton : même répartition clap / cheer / shout, avec
+    un petit nombre de cycles partagés (6 variantes) entre tous les figurants."""
+    rng = random.Random(seed + 303)
+    pool = {}
+    for kind, seated in (("clap", False), ("cheer", False), ("shout", False),
+                         ("clap", True), ("cheer", True)):
+        pool[(kind, seated)] = [human_action(kind, seated, frames, fps, rng)
+                                for _ in range(variants)]
+    counts = {"clap": 0, "cheer": 0, "shout": 0}
+    for o, _arms, seated, x, y in crowd.people:
+        r = rng.random()
+        kind = "clap" if r < 0.34 else ("cheer" if r < 0.80 else "shout")
+        if seated and kind == "shout":
+            kind = "cheer"
+        counts[kind] += 1
+        assign_action(o, rng.choice(pool[(kind, seated)]))
+    return counts
+
+
+def build_hero(coll, frames, fps, rng):
+    """Un humain riggé au centre du monde (0, 0)."""
+    z = terrain_h(0.0, 0.0)
+    hero = human_instance("Human_Center", coll, 3, (0.0, 0.0, z), math.radians(-20))
+    if frames > 0:
+        assign_action(hero, human_action("cheer", False, frames, fps, rng))
+    return hero
+
 # --------------------------------------------------------------- scène globale
 def setup_world(sun_coll):
     w = bpy.data.worlds.new("World")
@@ -881,6 +1098,10 @@ def main():
                     help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--group2", type=int, default=16,
                     help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
+    ap.add_argument("--hero", action="store_true",
+                    help="décor + un seul humain riggé au centre du monde (0, 0)")
+    ap.add_argument("--human", action="store_true",
+                    help="foule d'humains riggés (remplace les bonhommes bâtons) qui applaudissent, sautent, crient")
     ap.add_argument("--stick", action="store_true",
                     help="foule en bonhommes bâtons qui applaudissent, sautent et crient (sans les coureurs)")
     ap.add_argument("--set-only", action="store_true",
@@ -905,8 +1126,10 @@ def main():
     build_terrain(c_terrain)
     build_road(c_road)
     crowd, n = None, 0
+    if a.hero:
+        a.set_only = True
     if not a.set_only:
-        crowd = build_crowd(c_crowd, rng, a.crowd_scale, stick=a.stick)
+        crowd = build_crowd(c_crowd, rng, a.crowd_scale, stick=a.stick, human=a.human)
         n = crowd.count
         build_umbrellas(c_props)
         build_bikes(c_props)
@@ -917,7 +1140,11 @@ def main():
     setup_render(*a.res)
     if a.frames > 0:
         animate_camera(a.frames)
-    if a.stick and not a.set_only and a.frames > 0:
+    if a.hero or a.human:
+        build_hero(c_props, a.frames, sc.render.fps, random.Random(a.seed + 7))
+    if a.human and not a.set_only and a.frames > 0:
+        print('Foule humains :', animate_crowd_human(crowd, a.frames, sc.render.fps, a.seed))
+    elif a.stick and not a.set_only and a.frames > 0:
         print('Foule bâtons :', animate_crowd_stick(crowd, a.frames, sc.render.fps, a.seed))
     elif a.riders > 0 and not a.set_only:
         nr, tail_a = build_peloton(c_peloton, rng, a.frames, n=a.riders, n2=a.group2)
