@@ -15,6 +15,7 @@ Options (après le "--") :
     --frames N          durée du travelling/pan en images (défaut 120, 0 = fixe)
     --riders N          taille du peloton (défaut 62, 0 = aucun), de gauche à droite
     --group2 N          taille du 2e groupe en retard (défaut 16, 0 = aucun)
+    --plate IMG         re-projette IMG depuis la 1re caméra sur la géométrie (plan sans foule)
     --radius R          rayon de l'épingle ; --camera-fit F.json : caméra calée sur une vidéo
     --transparent       fond transparent + shadow catcher (incrustation) ; --no-hero : sans humain central
     --hero              décor + un humain riggé simple au centre du monde (0, 0)
@@ -141,7 +142,7 @@ def terrain_color(x, y, h):
     return (c.x, c.y, c.z, 1.0)
 
 
-def build_terrain(coll):
+def build_terrain(coll, keep=None):
     nx, ny = 240, 200
     cx, cy, lx, ly = 40.0, 30.0, 400.0, 260.0
 
@@ -160,7 +161,9 @@ def build_terrain(coll):
     for j in range(ny):
         for i in range(nx):
             a = j * (nx + 1) + i
-            faces.append((a, a + 1, a + nx + 2, a + nx + 1))
+            if keep is None or keep((verts[a][0] + verts[a + nx + 2][0]) / 2,
+                                    (verts[a][1] + verts[a + nx + 2][1]) / 2):
+                faces.append((a, a + 1, a + nx + 2, a + nx + 1))
     me = bpy.data.meshes.new("Terrain")
     me.from_pydata(verts, [], faces)
     me.update()
@@ -1020,7 +1023,7 @@ def animate_crowd_human(crowd, frames, fps, seed, variants=6):
     return counts
 
 
-def apply_camera_fit(cam, fit, frames):
+def apply_camera_fit(cam, fit, frames, crop=1.0, aspect=0.656):
     """Caméra calée sur une vidéo : pose de la 1re et de la dernière image
     (x, y, z, cap, inclinaison) + focale, interpolées linéairement."""
     cam.data.lens = fit["f"]
@@ -1030,11 +1033,14 @@ def apply_camera_fit(cam, fit, frames):
     pref.keyframe_new_interpolation_type = "LINEAR"
     if "cams" in fit:                        # calage image par image (x, y, z, cap, inclinaison, focale)
         cam.data.sensor_fit = "HORIZONTAL"
+        if crop < 1.0:                       # fenêtre en haut à gauche (zone couverte par l'image re-projetée)
+            cam.data.shift_x = -(1 / crop - 1) / 2
+            cam.data.shift_y = 0.0
         for i, (x, y, z, yaw, pit, f) in enumerate(fit["cams"]):
             fwd = Vector((math.cos(pit) * math.cos(yaw), math.cos(pit) * math.sin(yaw), -math.sin(pit)))
             cam.location = (x, y, z)
             cam.rotation_euler = fwd.to_track_quat("-Z", "Y").to_euler()
-            cam.data.lens = f
+            cam.data.lens = f / crop
             cam.keyframe_insert("location", frame=i + 1)
             cam.keyframe_insert("rotation_euler", frame=i + 1)
             cam.data.keyframe_insert("lens", frame=i + 1)
@@ -1048,6 +1054,78 @@ def apply_camera_fit(cam, fit, frames):
         cam.keyframe_insert("location", frame=frame)
         cam.keyframe_insert("rotation_euler", frame=frame)
     pref.keyframe_new_interpolation_type = old
+
+
+def _cam_basis(cam):
+    x, y, z, yaw, pit = cam[:5]
+    fwd = Vector((math.cos(pit) * math.cos(yaw), math.cos(pit) * math.sin(yaw), -math.sin(pit)))
+    right = fwd.cross(Vector((0, 0, 1))).normalized()
+    up = right.cross(fwd)
+    return Vector((x, y, z)), fwd, right, up
+
+
+def project_uv(p, cam, w, h):
+    """UV (origine en bas à gauche) du point monde p vu par la caméra cam (capteur 36 mm)."""
+    pos, fwd, right, up = _cam_basis(cam)
+    d = p - pos
+    dep = max(d.dot(fwd), 1e-3)
+    fp = cam[5] / 36.0 * w
+    px = w / 2 + fp * d.dot(right) / dep
+    py = h / 2 - fp * d.dot(up) / dep
+    return (px / w, 1.0 - py / h)
+
+
+def build_plate(coll, fit, image_path, w, h):
+    """Re-projette une image (1re image de la vidéo) depuis la 1re caméra sur la
+    géométrie : sol simplifié + fond lointain. Matériau émissif = couleurs exactes."""
+    cam1 = fit["cams"][0] if "cams" in fit else list(fit["cam1"]) + [fit["f"]]
+    terrain = build_terrain(coll, keep=lambda x, y: -90 < x < 130 and -120 < y < R + ROAD_W / 2 + 8)
+    me = terrain.data
+    uvl = me.uv_layers.new(name="Proj")
+    uvs = [project_uv(v.co, cam1, w, h) for v in me.vertices]
+    for lp in me.loops:
+        uvl.data[lp.index].uv = uvs[lp.vertex_index]
+    # fond : plan perpendiculaire à l'axe optique, loin derrière, avec marge
+    pos, fwd, right, up = _cam_basis(cam1)
+    D = 450.0
+    hw = D * math.tan(math.atan(18.0 / cam1[5])) * 1.9
+    hh = hw * h / w
+    n = 8
+    bm = bmesh.new()
+    vs = [[bm.verts.new(pos + fwd * D + right * (hw * (2 * i / n - 1)) + up * (hh * (2 * j / n - 1)))
+           for i in range(n + 1)] for j in range(n + 1)]
+    for j in range(n):
+        for i in range(n):
+            bm.faces.new((vs[j][i], vs[j][i + 1], vs[j + 1][i + 1], vs[j + 1][i]))
+    bme = bpy.data.meshes.new("Backdrop")
+    bm.to_mesh(bme)
+    bm.free()
+    uvb = bme.uv_layers.new(name="Proj")
+    for lp in bme.loops:
+        uvb.data[lp.index].uv = project_uv(bme.vertices[lp.vertex_index].co, cam1, w, h)
+    back = bpy.data.objects.new("Backdrop", bme)
+    coll.objects.link(back)
+    img = bpy.data.images.load(os.path.abspath(image_path))
+    m = bpy.data.materials.new("PlateProjection")
+    m.use_nodes = True
+    nt = m.node_tree
+    for nd in list(nt.nodes):
+        nt.nodes.remove(nd)
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    tex.extension = "EXTEND"
+    uvn = nt.nodes.new("ShaderNodeUVMap")
+    uvn.uv_map = "Proj"
+    em = nt.nodes.new("ShaderNodeEmission")
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(uvn.outputs["UV"], tex.inputs["Vector"])
+    nt.links.new(tex.outputs["Color"], em.inputs["Color"])
+    nt.links.new(em.outputs["Emission"], out.inputs["Surface"])
+    for ob_ in (terrain, back):
+        ob_.data.materials.clear()
+        ob_.data.materials.append(m)
+        for pg in ob_.data.polygons:
+            pg.use_smooth = False
 
 
 def build_hero(coll, frames, fps, rng):
@@ -1163,6 +1241,10 @@ def main():
                     help="taille du peloton principal (0 = aucun)")
     ap.add_argument("--group2", type=int, default=16,
                     help="taille du 2e groupe, en retard derrière le peloton (0 = aucun)")
+    ap.add_argument("--plate", help="image (1re image de la vidéo) à re-projeter depuis la 1re caméra "
+                    "sur la géométrie (sol + fond) ; avec --camera-fit : rend le plan sans foule")
+    ap.add_argument("--crop", type=float, default=1.0,
+                    help="fenêtre (haut-gauche) de l'image gardée, ex. 0.88 : zoome pour masquer les bords non couverts")
     ap.add_argument("--radius", type=float, help="rayon de l'épingle (m)")
     ap.add_argument("--camera-fit", help="JSON de calage caméra sur une vidéo (cam1, camN, f)")
     ap.add_argument("--no-hero", action="store_true", help="pas d'humain central")
@@ -1206,8 +1288,14 @@ def main():
 
     rng = random.Random(a.seed)
     noise.seed_set(a.seed)
-    build_terrain(c_terrain)
-    build_road(c_road)
+    if a.plate:
+        a.set_only = True
+        if not fit:
+            raise SystemExit("--plate nécessite --camera-fit")
+        build_plate(c_terrain, fit, a.plate, *a.res)
+    else:
+        build_terrain(c_terrain)
+        build_road(c_road)
     crowd, n = None, 0
     if a.hero:
         a.set_only = True
@@ -1224,7 +1312,9 @@ def main():
     setup_camera(c_cam, a.reference)
     setup_render(*a.res)
     if fit:
-        apply_camera_fit(sc.camera, fit, a.frames)
+        sc.view_settings.view_transform = "Standard"      # couleurs de la vidéo inchangées
+    if fit:
+        apply_camera_fit(sc.camera, fit, a.frames, a.crop, a.res[1] / a.res[0])
     elif a.frames > 0:
         animate_camera(a.frames)
     if a.transparent:
