@@ -22,7 +22,15 @@ from pydantic import BaseModel
 from core.job import Job, Params, find_blender
 
 HERE = Path(__file__).resolve().parent
-CFG = yaml.safe_load((HERE / "config.yaml").read_text(encoding="utf-8"))
+CFG = {}
+
+
+def load_config(path):
+    CFG.clear()
+    CFG.update(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+
+
+load_config(HERE / "config.yaml")
 
 app = FastAPI(title="Earth Importer")
 app.mount("/ui", StaticFiles(directory=HERE / "ui"), name="ui")
@@ -136,7 +144,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--browser", action="store_true", help="ouvrir dans le navigateur au lieu d'une fenetre")
     ap.add_argument("--no-open", action="store_true", help="ne rien ouvrir (serveur seul)")
+    ap.add_argument("--config", default=str(HERE / "config.yaml"), help="autre fichier de configuration")
     args = ap.parse_args()
+    load_config(args.config)
     host, port = CFG.get("host", "127.0.0.1"), CFG.get("port", 8757)
     url = f"http://{host}:{port}/"
 

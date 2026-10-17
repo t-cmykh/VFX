@@ -1,4 +1,6 @@
 syntax = "proto2";
+// Schema rocktree reconstruit par retroplasma/earth-reverse-engineering (proto/rocktree.proto).
+// Reference uniquement : le code lit les champs a la main (core/pbwire.py, core/rocktree.py).
 
 package geo_globetrotter_proto_rocktree;
 
