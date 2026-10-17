@@ -1,0 +1,29 @@
+# Tout ce qui depend du protocole Google est ici, pas dans le code.
+# Si Google change ses URLs, c'est en general ce fichier qu'il faut retoucher.
+
+base_url: https://kh.google.com/rt/earth/
+planetoid: PlanetoidMetadata
+bulk: "BulkMetadata/pb=!1m2!1s{path}!2u{epoch}"
+node: "NodeData/pb=!1m2!1s{path}!2u{epoch}!2e{texture_format}{imagery}!4b0"
+node_imagery: "!3u{imagery_epoch}"
+
+# Reseau
+workers: 6                 # telechargements en parallele
+min_interval: 0.02         # secondes minimum entre deux requetes (tous threads confondus)
+timeout: 30
+max_retries: 5
+user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+cache: true                # cache disque des reponses brutes (reprise apres annulation)
+
+# Textures : 1 = JPG (lisible partout), 6 = CRN/DXT1 (non decode par cet outil)
+texture_formats: [1, 6]
+# Les UV rocktree suivent la convention OpenGL (v=0 = premiere ligne de l'image).
+# OBJ/Blender attendent v=0 en bas : on retourne v. Passe a false si les textures sortent a l'envers.
+flip_v: true
+
+# Blender pour les exports ABC/USD (vide = detection automatique)
+blender_path: ""
+
+# Interface
+host: 127.0.0.1            # jamais 0.0.0.0 : outil local uniquement
+port: 8757
