@@ -12,6 +12,7 @@ import time
 import webbrowser
 from pathlib import Path
 
+import requests
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -150,6 +151,13 @@ def main():
     host, port = CFG.get("host", "127.0.0.1"), CFG.get("port", 8757)
     url = f"http://{host}:{port}/"
 
+    if already_running(url):
+        # une instance tourne deja (souvent lancee sans console) : on la reutilise
+        print(f"Earth Importer deja lance : {url}")
+        if not args.no_open:
+            webbrowser.open(url)
+        return
+
     server = uvicorn.Server(uvicorn.Config(app, host=host, port=port, log_level="warning"))
     if args.no_open:
         server.run()
@@ -158,17 +166,30 @@ def main():
     if not args.browser:
         try:
             import webview
-        except ImportError:
-            print("pywebview absent : ouverture dans le navigateur")
-    if webview is None:
-        threading.Timer(1.0, webbrowser.open, [url]).start()
-        print(f"Earth Importer : {url}  (Ctrl+C pour quitter)")
-        server.run()
-        return
-    STATE["native"] = True
-    threading.Thread(target=server.run, daemon=True).start()
-    webview.create_window("Earth Importer", url, js_api=NativeApi(), width=1280, height=860)
-    webview.start()
+        except Exception as e:  # absent, ou dependance native manquante (pythonnet, WebView2...)
+            print(f"pywebview indisponible ({e}) : ouverture dans le navigateur")
+    if webview is not None:
+        STATE["native"] = True
+        threading.Thread(target=server.run, daemon=True).start()
+        try:
+            webview.create_window("Earth Importer", url, js_api=NativeApi(), width=1280, height=860)
+            webview.start()
+            return
+        except Exception as e:
+            print(f"Fenetre native impossible ({e}) : ouverture dans le navigateur")
+            STATE["native"] = False
+            webbrowser.open(url)
+            threading.Event().wait()  # le serveur tourne dans son thread
+    threading.Timer(1.0, webbrowser.open, [url]).start()
+    print(f"Earth Importer : {url}  (Ctrl+C pour quitter)")
+    server.run()
+
+
+def already_running(url):
+    try:
+        return requests.get(url + "api/info", timeout=1).ok
+    except requests.RequestException:
+        return False
 
 
 if __name__ == "__main__":

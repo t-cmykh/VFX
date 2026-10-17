@@ -31,6 +31,11 @@ python app.py              # fenêtre native si pywebview est installé, sinon n
 python app.py --browser    # force le navigateur (http://127.0.0.1:8757)
 ```
 
+Sous Windows, sans terminal : double-clic sur **`EarthImporter.bat`** (ou `launch.pyw`).
+Si rien ne s'ouvre : une boîte d'erreur s'affiche, le détail est dans `earth_importer.log`, et
+**`EarthImporter_debug.bat`** relance avec la console visible. Si une instance tourne déjà
+(par exemple restée ouverte en arrière-plan), elle est réutilisée au lieu d'échouer sur le port.
+
 ## Utilisation
 
 1. **Coordonnées** : taper `48.8584, 2.2945` puis Entrée, ou cliquer sur la carte / déplacer le marqueur.
