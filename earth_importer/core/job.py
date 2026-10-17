@@ -182,7 +182,7 @@ class Job:
             if not todo:
                 raise RuntimeError("Aucune donnee 3D dans cette zone a ce niveau (essaie un niveau plus bas ou une autre zone).")
             levels = sorted({len(p) for p in todo})
-            mpt = min(m.meters_per_texel for m in todo.values() if m.meters_per_texel) if todo else 0
+            mpt = min((m.meters_per_texel for m in todo.values() if m.meters_per_texel), default=0)
             self.log("INFO", f"{len(todo)} tuiles a telecharger (niveaux {levels[0]}-{levels[-1]}, ~{mpt:.2f} m/texel au plus fin)")
             if self.estimate_only:
                 self.emit("estimate", {"tiles": len(todo), "levels": levels})
