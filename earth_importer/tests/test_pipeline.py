@@ -165,3 +165,15 @@ def test_uv_matches_google_decoder(oas):
     google_v = 1 - (raw[:, 1] + off[1]) * scale[1]
     assert np.allclose(m.uv[:, 0], google_u)
     assert np.allclose(1 - m.uv[:, 1], google_v)  # ce que write_mesh ecrit avec flip_v: true
+
+
+NYC_CAMERA = (1329866.230289, -4643494.267515, 4154677.131562)  # earth-reverse-engineering client/main.cpp
+
+
+def test_google_frame_is_a_sphere():
+    """Le repere de Google est une sphere de 6 371 010 m : la camera "nyc" du client de reference
+    doit retomber sur Lower Manhattan (40.7005, -74.0186) a ~169 m. En WGS84 elle serait dans le Bronx."""
+    assert np.linalg.norm(lla_to_ecef(40.7005, -74.0186, 169.0) - np.array(NYC_CAMERA)) < 30
+    frame = LocalFrame(40.7005, -74.0186)
+    e, n, u = frame.to_enu(NYC_CAMERA)
+    assert abs(e) < 30 and abs(n) < 30 and abs(u - 169) < 5

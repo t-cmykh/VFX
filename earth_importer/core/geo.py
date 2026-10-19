@@ -1,20 +1,23 @@
-"""WGS84 : lat/lon -> ECEF, et ECEF -> repere local ENU (Est, Nord, Haut), en float64."""
+"""Repere de Google Earth : une SPHERE (rayon donne par PlanetoidMetadata, 6 371 010 m), pas l'ellipsoide WGS84.
+
+Preuve : la camera "nyc" du client de reference (earth-reverse-engineering, client/main.cpp),
+(1329866, -4643494, 4154677), tombe sur Lower Manhattan a 169 m d'altitude lue sur cette sphere,
+et sur le Bronx a 2,1 km d'altitude lue en WGS84. La latitude saisie (WGS84, celle des cartes)
+est utilisee directement comme latitude sur la sphere.
+
+ECEF -> repere local ENU (Est, Nord, Haut) autour du centre de la zone, en float64.
+"""
 import math
 
 import numpy as np
 
-WGS84_A = 6378137.0
-WGS84_E2 = 6.69437999014e-3
+GOOGLE_RADIUS = 6371010.0
 
 
-def lla_to_ecef(lat, lon, alt=0.0):
+def lla_to_ecef(lat, lon, alt=0.0, radius=GOOGLE_RADIUS):
     la, lo = math.radians(lat), math.radians(lon)
-    n = WGS84_A / math.sqrt(1 - WGS84_E2 * math.sin(la) ** 2)
-    return np.array([
-        (n + alt) * math.cos(la) * math.cos(lo),
-        (n + alt) * math.cos(la) * math.sin(lo),
-        (n * (1 - WGS84_E2) + alt) * math.sin(la),
-    ])
+    r = radius + alt
+    return np.array([r * math.cos(la) * math.cos(lo), r * math.cos(la) * math.sin(lo), r * math.sin(la)])
 
 
 def enu_rotation(lat, lon):
@@ -29,10 +32,10 @@ def enu_rotation(lat, lon):
 
 
 class LocalFrame:
-    """Origine locale : tout point ECEF est ramene en metres autour de (lat, lon)."""
+    """Origine locale : tout point ECEF est ramene en metres autour de (lat, lon), au niveau de la sphere."""
 
-    def __init__(self, lat, lon):
-        self.origin = lla_to_ecef(lat, lon)
+    def __init__(self, lat, lon, radius=GOOGLE_RADIUS):
+        self.origin = lla_to_ecef(lat, lon, 0.0, radius or GOOGLE_RADIUS)
         self.rot = enu_rotation(lat, lon)
 
     def to_enu(self, ecef):

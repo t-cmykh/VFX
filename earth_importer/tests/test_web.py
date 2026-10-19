@@ -62,7 +62,10 @@ def test_web_export(page, tmp_path, fmt, ext):
     assert z.read("t/textures/30604_0.jpg") == fk.JPEG
     data = z.read(f"t/t.{ext}")
     if fmt == "obj":
-        assert sum(1 for line in data.decode().splitlines() if line.startswith("f ")) == 44  # comme test_pipeline
+        lines = data.decode().splitlines()
+        assert sum(1 for line in lines if line.startswith("f ")) == 44  # comme test_pipeline
+        ys = [float(line.split()[2]) for line in lines if line.startswith("v ")]
+        assert abs(sum(ys) / len(ys) - 35) < 0.5  # hauteur du faux monde : meme repere (sphere) que Python
     elif fmt == "usd":
         assert data.decode().count("faceVertexCounts") == 2
     else:
@@ -213,3 +216,9 @@ def test_web_merged_export(page, tmp_path, fmt, ext):
         assert all(0 <= u <= 1 and 0 <= v <= 1 for u, v in vts)
     else:
         assert data.count(b'"primitives"') == 1
+
+
+def test_web_frame_matches_reference_camera(page):
+    page.goto((ROOT / "EarthImporter.html").as_uri())
+    enu = page.evaluate("""() => Array.from(GEO.frame(40.7005, -74.0186).toEnu([1329866.230289, -4643494.267515, 4154677.131562]))""")
+    assert abs(enu[0]) < 30 and abs(enu[1]) < 30 and abs(enu[2] - 169) < 5

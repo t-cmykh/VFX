@@ -103,7 +103,6 @@ class Job {
     this.estimateOnly = estimateOnly;
     this.abort = new AbortController();
     this.fetcher = new Fetcher(this.abort.signal, ui.log);
-    this.frame = GEO.frame(p.lat, p.lon);
     this.withTex = p.content === "geo_tex";
   }
 
@@ -130,6 +129,7 @@ class Job {
     if (!root.nodes.size || ![...root.nodes.values()].some((n) => n.obb))
       throw new Error("Protocole Google modifié : métadonnées racine vides. Décodeur à mettre à jour.");
     this.ui.log("INFO", `Protocole OK (epoch racine ${planetoid.rootEpoch})`);
+    this.frame = GEO.frame(this.p.lat, this.p.lon, planetoid.radius);
     return root;
   }
 

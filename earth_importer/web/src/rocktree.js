@@ -235,18 +235,19 @@ const RT = {
   },
 };
 
-// ---------------------------------------------------------------- WGS84 / ENU
+// ---------------------------------------------------------------- repere : sphere de Google, pas WGS84
+// Voir core/geo.py : la camera "nyc" du client de reference ne tombe sur Manhattan qu'avec une sphere
+// de rayon PlanetoidMetadata (6 371 010 m) ; la latitude des cartes y est utilisee telle quelle.
 const GEO = {
-  A: 6378137.0, E2: 6.69437999014e-3,
-  llaToEcef(lat, lon, alt = 0) {
-    const la = lat * Math.PI / 180, lo = lon * Math.PI / 180;
-    const n = GEO.A / Math.sqrt(1 - GEO.E2 * Math.sin(la) ** 2);
-    return [(n + alt) * Math.cos(la) * Math.cos(lo), (n + alt) * Math.cos(la) * Math.sin(lo), (n * (1 - GEO.E2) + alt) * Math.sin(la)];
+  RADIUS: 6371010.0,
+  llaToEcef(lat, lon, alt = 0, radius = GEO.RADIUS) {
+    const la = lat * Math.PI / 180, lo = lon * Math.PI / 180, r = radius + alt;
+    return [r * Math.cos(la) * Math.cos(lo), r * Math.cos(la) * Math.sin(lo), r * Math.sin(la)];
   },
-  frame(lat, lon) {
+  frame(lat, lon, radius = GEO.RADIUS) {
     const la = lat * Math.PI / 180, lo = lon * Math.PI / 180;
     const sl = Math.sin(la), cl = Math.cos(la), so = Math.sin(lo), co = Math.cos(lo);
-    const o = GEO.llaToEcef(lat, lon);
+    const o = GEO.llaToEcef(lat, lon, 0, radius || GEO.RADIUS);
     const R = [[-so, co, 0], [-sl * co, -sl * so, cl], [cl * co, cl * so, sl]];
     return {
       // ECEF (n*3) -> ENU (n*3), en float64
@@ -257,10 +258,6 @@ const GEO = {
           for (let k = 0; k < 3; k++) out[i + k] = R[k][0] * dx + R[k][1] * dy + R[k][2] * dz;
         }
         return out;
-      },
-      horizontalDistance(p) {
-        const e = this.toEnu(p);
-        return Math.hypot(e[0], e[1]);
       },
     };
   },

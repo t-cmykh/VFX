@@ -96,7 +96,7 @@ retélécharge pas ce qui l'a déjà été. Supprimer ce dossier pour repartir d
 3. **Téléchargement** des `NodeData` en parallèle (limite de débit, nouvelles tentatives sur 429/5xx).
 4. **Décodage** : sommets en delta, UV, triangle strips, masque d'octants. Un parent n'exporte que les
    octants qui n'ont pas d'enfant plus détaillé (pas de couches superposées). Eau et jupes ignorées.
-5. **ECEF → ENU** en float64 autour du centre, écriture OBJ, puis Blender en arrière-plan pour ABC/USD
+5. **ECEF → ENU** en float64 autour du centre (repère de Google = sphère de 6 371 010 m, pas WGS84 : vérifié sur la caméra « nyc » du dépôt de référence), écriture OBJ, puis Blender en arrière-plan pour ABC/USD
    (sommets soudés par tuile).
 
 ## Quand ça casse

@@ -76,7 +76,7 @@ class Job:
         self.out = Path(params.out_dir).expanduser() / params.name
         cache = Path(params.out_dir).expanduser() / ".earth_cache"
         self.fetcher = Fetcher(cfg, cache_dir=cache, cancel=self.cancel, log=self.log)
-        self.frame = LocalFrame(params.lat, params.lon)
+        self.frame = LocalFrame(params.lat, params.lon)  # rayon reel lu au test de sante
         self.with_tex = params.content == "geo_tex"
 
     # ------------------------------------------------------------ evenements
@@ -175,7 +175,8 @@ class Job:
         try:
             self.p.validate()
             self.log("INFO", f"Zone {self.p.lat:.6f}, {self.p.lon:.6f} - rayon {self.p.radius:.0f} m - niveau {self.p.level}")
-            _, root = self.health_check()
+            planetoid, root = self.health_check()
+            self.frame = LocalFrame(self.p.lat, self.p.lon, planetoid["radius"])
             candidates = self.collect(root)
             excl = self.exclusions(candidates)
             todo = {p: m for p, m in candidates.items() if len(excl[p]) < 8}
