@@ -17,8 +17,8 @@ cache: true                # cache disque des reponses brutes (reprise apres ann
 
 # Textures : 1 = JPG (lisible partout), 6 = CRN/DXT1 (non decode par cet outil)
 texture_formats: [1, 6]
-# Les UV rocktree suivent la convention OpenGL (v=0 = premiere ligne de l'image).
-# OBJ/Blender attendent v=0 en bas : on retourne v. Passe a false si les textures sortent a l'envers.
+# Le decodeur de Google retourne V (v = 1 - v) : on fait de meme a l'ecriture OBJ/USD.
+# Passe a false seulement si les textures sortent a l'envers.
 flip_v: true
 
 # Blender pour les exports ABC/USD (vide = detection automatique)

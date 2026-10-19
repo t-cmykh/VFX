@@ -16,3 +16,5 @@
 #draw.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .leaflet-container.drawing, .leaflet-container.drawing .leaflet-interactive { cursor: crosshair; }
 #level { min-width: 190px; }
+.check { display: flex; align-items: center; gap: 6px; min-height: 34px; color: var(--text); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.check input { min-height: 0; margin: 0; }

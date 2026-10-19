@@ -6,8 +6,8 @@
 
 const enc = new TextEncoder();
 
-// v des UV rocktree : v=0 = premiere ligne de l'image (convention OpenGL / glTF).
-// OBJ et USD attendent v=0 en bas : on retourne v, sauf si flipV est desactive.
+// UV rocktree = (u + offset) * scale. Le decodeur de Google retourne ensuite V : c'est ce que font
+// OBJ et USD quand flipV est actif ; glTF (origine en haut de l'image) prend l'inverse.
 function uvForObj(v, flipV) { return flipV ? 1 - v : v; }
 function uvForGltf(v, flipV) { return flipV ? v : 1 - v; }
 

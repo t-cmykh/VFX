@@ -198,11 +198,9 @@ const RT = {
       const [raw, uMod, vMod] = RT.unpackTexcoords(mm.bytes(7), n);
       const oas = mm.floats(10);
       let off, scale;
+      // meme formule que le decodeur de Google (T.dd / T.Ja) ; son retournement de V est fait a l'ecriture (flipV)
       if (oas.length === 4) { off = [oas[0], oas[1]]; scale = [oas[2], oas[3]]; }
-      else {
-        off = [0.5, 0.5]; scale = [1 / uMod, 1 / vMod];
-        off[1] -= 1 / scale[1]; scale[1] *= -1;
-      }
+      else { off = [0.5, 0.5]; scale = [1 / uMod, 1 / vMod]; }
       const uv = new Float64Array(raw.length);
       for (let i = 0; i < n; i++) {
         uv[2 * i] = (raw[2 * i] + off[0]) * scale[0];

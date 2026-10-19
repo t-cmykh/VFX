@@ -757,6 +757,8 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
 #draw.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .leaflet-container.drawing, .leaflet-container.drawing .leaflet-interactive { cursor: crosshair; }
 #level { min-width: 190px; }
+.check { display: flex; align-items: center; gap: 6px; min-height: 34px; color: var(--text); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.check input { min-height: 0; margin: 0; }
 
 </style>
 </head>
@@ -783,6 +785,9 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
     </select>
+  </label>
+  <label title="À cocher seulement si les textures sortent à l'envers">Textures
+    <span class="check"><input id="flipv" type="checkbox"> Inverser V</span>
   </label>
   <label class="grow">Nom
     <input id="name" placeholder="auto">
@@ -1015,11 +1020,9 @@ const RT = {
       const [raw, uMod, vMod] = RT.unpackTexcoords(mm.bytes(7), n);
       const oas = mm.floats(10);
       let off, scale;
+      // meme formule que le decodeur de Google (T.dd / T.Ja) ; son retournement de V est fait a l'ecriture (flipV)
       if (oas.length === 4) { off = [oas[0], oas[1]]; scale = [oas[2], oas[3]]; }
-      else {
-        off = [0.5, 0.5]; scale = [1 / uMod, 1 / vMod];
-        off[1] -= 1 / scale[1]; scale[1] *= -1;
-      }
+      else { off = [0.5, 0.5]; scale = [1 / uMod, 1 / vMod]; }
       const uv = new Float64Array(raw.length);
       for (let i = 0; i < n; i++) {
         uv[2 * i] = (raw[2 * i] + off[0]) * scale[0];
@@ -1097,8 +1100,8 @@ if (typeof module !== "undefined") module.exports = { Msg, RT, GEO, readVarint }
 
 const enc = new TextEncoder();
 
-// v des UV rocktree : v=0 = premiere ligne de l'image (convention OpenGL / glTF).
-// OBJ et USD attendent v=0 en bas : on retourne v, sauf si flipV est desactive.
+// UV rocktree = (u + offset) * scale. Le decodeur de Google retourne ensuite V : c'est ce que font
+// OBJ et USD quand flipV est actif ; glTF (origine en haut de l'image) prend l'inverse.
 function uvForObj(v, flipV) { return flipV ? 1 - v : v; }
 function uvForGltf(v, flipV) { return flipV ? v : 1 - v; }
 
@@ -1369,7 +1372,7 @@ const CONFIG = {
   timeout: 30000,
   maxRetries: 5,
   textureFormats: [1, 6],
-  flipV: true,          // false si les textures sortent a l'envers
+  flipV: true,          // comme le decodeur de Google ; la case "Inverser V" de l'interface le contredit
 };
 const base = new URLSearchParams(location.search).get("base");  // tests : faux serveur
 if (base) Object.assign(CONFIG, { baseUrl: base, minInterval: 0, maxRetries: 1 });
@@ -1617,7 +1620,7 @@ class Job {
       const tiles = await this.download(todo, excl);
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
-      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, CONFIG.flipV);
+      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
       if (this.withTex) for (const t of tiles) if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
@@ -1794,7 +1797,7 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv"]) $(id).disabled = running;
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
 }
@@ -1807,7 +1810,8 @@ function launch(estimateOnly) {
   if (!(side >= 2 && side <= MAX_SIDE)) return ui.log("ERROR", `Côté du carré entre 2 et ${MAX_SIDE} m`);
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
-  const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name };
+  const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
+              flipV: CONFIG.flipV !== $("flipv").checked };
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);

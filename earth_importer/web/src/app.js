@@ -13,7 +13,7 @@ const CONFIG = {
   timeout: 30000,
   maxRetries: 5,
   textureFormats: [1, 6],
-  flipV: true,          // false si les textures sortent a l'envers
+  flipV: true,          // comme le decodeur de Google ; la case "Inverser V" de l'interface le contredit
 };
 const base = new URLSearchParams(location.search).get("base");  // tests : faux serveur
 if (base) Object.assign(CONFIG, { baseUrl: base, minInterval: 0, maxRetries: 1 });
@@ -261,7 +261,7 @@ class Job {
       const tiles = await this.download(todo, excl);
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
-      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, CONFIG.flipV);
+      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
       if (this.withTex) for (const t of tiles) if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
@@ -438,7 +438,7 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv"]) $(id).disabled = running;
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
 }
@@ -451,7 +451,8 @@ function launch(estimateOnly) {
   if (!(side >= 2 && side <= MAX_SIDE)) return ui.log("ERROR", `Côté du carré entre 2 et ${MAX_SIDE} m`);
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
-  const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name };
+  const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
+              flipV: CONFIG.flipV !== $("flipv").checked };
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);

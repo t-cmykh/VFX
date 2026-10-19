@@ -147,3 +147,21 @@ def test_cancel(server, tmp_path):
     job.cancel.set()
     job.run()
     assert events[-1][1]["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("oas", [None, [0.5, 0.5, 1 / 300, 1 / 200]])
+def test_uv_matches_google_decoder(oas):
+    """Les UV ecrites dans l'OBJ (flip_v actif) = celles du decodeur de Google repris par dump_obj.js :
+    offset/scale lus (champ 10) ou deduits des modulos, puis v' = 1 - (v + off) * scale dans les deux cas."""
+    raw = np.array([[0, 0], [299, 199], [150, 20], [7, 150]])
+    strip = [0, 1, 2, 3]
+    mesh = (fk.f_bytes(1, fk.encode_vertices(np.zeros((4, 3), int))) +
+            fk.f_bytes(7, fk.encode_texcoords(raw, (300, 200))) +
+            fk.f_bytes(3, fk.encode_strip(strip)) + fk.f_bytes(8, fk.encode_octant_counts([4])) +
+            (fk.f_packed_floats(10, oas) if oas else b""))
+    m = rt.parse_mesh(Message(mesh), with_texture=True)
+    off, scale = (oas[:2], oas[2:]) if oas else ([0.5, 0.5], [1 / 300, 1 / 200])
+    google_u = (raw[:, 0] + off[0]) * scale[0]
+    google_v = 1 - (raw[:, 1] + off[1]) * scale[1]
+    assert np.allclose(m.uv[:, 0], google_u)
+    assert np.allclose(1 - m.uv[:, 1], google_v)  # ce que write_mesh ecrit avec flip_v: true

@@ -110,7 +110,8 @@ vérifier avec `python -m pytest tests -q`.
 - **Non testé contre les vrais serveurs Google** : l'environnement de développement n'y avait pas accès.
   Décodeur, parcours, exports et interface sont testés sur données synthétiques ; les points suivants
   sont à vérifier au premier essai réel :
-  - le sens des textures (`flip_v` dans `config.yaml` si elles sortent à l'envers) ;
+  - le sens des textures : aligné sur le décodeur de Google ; en secours, `flip_v` dans `config.yaml`
+    (version Python) ou la case « Inverser V » (version fichier local) ;
   - la correspondance niveau ↔ résolution affichée dans le menu Détail.
 - Textures **CRN/DXT1** non décodées : l'outil demande du JPG ; si une tuile n'existe qu'en CRN, elle
   est exportée sans texture (avertissement dans le log).

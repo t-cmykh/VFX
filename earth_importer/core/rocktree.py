@@ -66,7 +66,7 @@ class Bulk:
 class Mesh:
     positions: np.ndarray       # (n, 3) uint8, repere local du noeud
     octants: np.ndarray         # (n,) uint8, octant enfant (0-7) de chaque sommet
-    uv: np.ndarray | None       # (n, 2) float64, convention OpenGL (v=0 sur la 1re ligne de l'image)
+    uv: np.ndarray | None       # (n, 2) float64, (u + offset) * scale ; v a retourner pour OBJ/USD
     triangles: np.ndarray       # (m, 3) int64
     texture: bytes | None
     texture_format: int | None
@@ -224,13 +224,14 @@ def parse_mesh(mm, with_texture):
     size = (0, 0)
     if with_texture and mm.has(7):
         raw_uv, (u_mod, v_mod) = unpack_texcoords(mm.bytes(7), n)
+        # meme formule que le decodeur JS de Google (exporter/lib/decode-resource.js, T.dd et T.Ja) :
+        # (u + offset) * scale, avec offset/scale lus dans le message ou deduits des modulos.
+        # Google retourne ensuite V dans tous les cas ; ici ce retournement est fait a l'ecriture (flip_v).
         oas = mm.floats(10)
         if len(oas) == 4:
             off, scale = np.array(oas[:2]), np.array(oas[2:])
         else:
             off, scale = np.array([0.5, 0.5]), np.array([1.0 / u_mod, 1.0 / v_mod])
-            off[1] -= 1.0 / scale[1]
-            scale[1] *= -1
         uv = (raw_uv + off) * scale
         textures = mm.msgs(6)
         if textures:
