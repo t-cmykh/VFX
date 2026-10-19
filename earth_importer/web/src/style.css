@@ -1,0 +1,8 @@
+/* complements a ui/style.css pour la version fichier local */
+.pin {
+  background: var(--accent);
+  border: 3px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .5);
+  cursor: grab;
+}

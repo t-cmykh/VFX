@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earth Importer</title>
+<!-- @inline-css ../../ui/vendor/leaflet/leaflet.css -->
+<!-- @inline-css ../../ui/style.css -->
+<!-- @inline-css style.css -->
+</head>
+<body>
+<header class="bar">
+  <label class="grow">Coordonnées
+    <input id="coords" placeholder="48.8584, 2.2945" autocomplete="off">
+  </label>
+  <button id="go">Aller</button>
+  <label>Rayon (m)
+    <input id="radius" type="number" min="1" max="5000" step="10" value="200">
+  </label>
+  <label>Détail
+    <select id="level"></select>
+  </label>
+</header>
+
+<main id="map"></main>
+
+<section class="bar controls">
+  <label>Contenu
+    <select id="content">
+      <option value="geo_tex">Géométrie + textures</option>
+      <option value="geo">Géométrie seule</option>
+    </select>
+  </label>
+  <label class="grow">Nom
+    <input id="name" placeholder="auto">
+  </label>
+  <button id="estimate" class="ghost">Estimer</button>
+  <button id="cancel" class="ghost" disabled>Annuler</button>
+  <span class="split">
+    <button id="download" class="primary">Télécharger</button>
+    <select id="fmt" title="Format d'export">
+      <option value="obj">OBJ</option>
+      <option value="usd">USD</option>
+      <option value="glb">GLB</option>
+    </select>
+  </span>
+</section>
+
+<section class="progress">
+  <div class="track"><div id="fill"></div></div>
+  <span id="ptext">Prêt</span>
+</section>
+
+<section id="log" aria-live="polite"></section>
+
+<!-- @inline-js ../../ui/vendor/leaflet/leaflet.js -->
+<!-- @inline-js rocktree.js -->
+<!-- @inline-js exporters.js -->
+<!-- @inline-js app.js -->
+</body>
+</html>

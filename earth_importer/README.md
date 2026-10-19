@@ -36,6 +36,22 @@ Si rien ne s'ouvre : une boîte d'erreur s'affiche, le détail est dans `earth_i
 **`EarthImporter_debug.bat`** relance avec la console visible. Si une instance tourne déjà
 (par exemple restée ouverte en arrière-plan), elle est réutilisée au lieu d'échouer sur le port.
 
+## Version fichier local (sans installation)
+
+**`EarthImporter.html`** : double-clic, ça s'ouvre dans le navigateur. Rien à installer (ni Python,
+ni Blender). Même carte, mêmes réglages ; le résultat arrive en **`.zip`** dans le dossier
+Téléchargements.
+
+- Formats : **OBJ**, **USD** (`.usda`, matériaux `UsdPreviewSurface`, textures en `clamp`) et
+  **GLB**. Pas d'Alembic (impossible dans un navigateur) : utiliser la version Python pour l'ABC.
+- Tout se passe en mémoire : pour de très grandes zones, préférer la version Python.
+- Fermer ou recharger la page vide le cache (relancer après une annulation ne retélécharge rien
+  tant que la page reste ouverte).
+- Si le log affiche « requête bloquée par le navigateur (CORS) », Google refuse les requêtes
+  venant d'une page locale : utiliser la version Python, qui n'a pas cette limite.
+- Le fichier est généré depuis `web/src/` par `python web/build.py` (ne pas le modifier à la main).
+  Les réglages liés au protocole (URLs, `flipV`…) sont en haut de `web/src/app.js`.
+
 ## Utilisation
 
 1. **Coordonnées** : taper `48.8584, 2.2945` puis Entrée, ou cliquer sur la carte / déplacer le marqueur.

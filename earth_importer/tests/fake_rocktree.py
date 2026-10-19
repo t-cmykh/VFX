@@ -185,6 +185,7 @@ class FakeServer:
                 log.append(key)
                 data = files_ref.get(key)
                 self.send_response(200 if data is not None else 404)
+                self.send_header("Access-Control-Allow-Origin", "*")  # version web (fichier local)
                 self.end_headers()
                 if data is not None:
                     self.wfile.write(data)
