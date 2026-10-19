@@ -47,8 +47,11 @@ Téléchargements.
 - Tout se passe en mémoire : pour de très grandes zones, préférer la version Python.
 - Fermer ou recharger la page vide le cache (relancer après une annulation ne retélécharge rien
   tant que la page reste ouverte).
-- Fond de carte : CARTO (plan) ou Esri (satellite). Les serveurs OpenStreetMap refusent les pages
-  ouvertes en `file://`.
+- Zone **carrée** : bouton **▢ Dessiner** puis cliquer-glisser d'un coin à l'autre (Échap pour
+  annuler), ou champ « Côté (m) » + coordonnées du centre. Le marqueur déplace le carré.
+- Fond de carte au choix (en haut à droite, mémorisé) : Google Satellite / Plan, Esri, CARTO.
+  Les serveurs OpenStreetMap refusent les pages ouvertes en `file://`, et certains fournisseurs
+  demandent une clé : si un fond affiche une erreur, en choisir un autre.
 - Si le log affiche « requête bloquée par le navigateur (CORS) », Google refuse les requêtes
   venant d'une page locale : utiliser la version Python, qui n'a pas cette limite.
 - Le fichier est généré depuis `web/src/` par `python web/build.py` (ne pas le modifier à la main).

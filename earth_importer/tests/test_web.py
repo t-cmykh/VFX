@@ -81,3 +81,36 @@ def test_web_protocol_error(page):
         assert "Protocole Google modifié" in page.inner_text("#log")
     finally:
         srv.close()
+
+
+def test_controls_populated(page):
+    page.goto((ROOT / "EarthImporter.html").as_uri())
+    levels = page.eval_on_selector_all("#level option", "els => els.map(e => e.value)")
+    assert levels == [str(n) for n in range(15, 22)] and page.input_value("#level") == "18"
+    assert page.input_value("#side") == "400" and page.input_value("#coords")
+
+
+def test_draw_square(page):
+    page.set_viewport_size({"width": 1200, "height": 800})
+    page.goto((ROOT / "EarthImporter.html").as_uri())
+    box = page.locator("#map").bounding_box()
+    x0, y0 = box["x"] + 300, box["y"] + 150
+    page.click("#draw")
+    page.mouse.move(x0, y0)
+    page.mouse.down()
+    page.mouse.move(x0 + 100, y0 + 40, steps=5)
+    page.mouse.move(x0 + 200, y0 + 80, steps=5)  # plus large que haut : le carre suit la plus grande dimension
+    page.mouse.up()
+    side = float(page.input_value("#side"))
+    assert 100 < side < 10000
+    assert "active" not in (page.get_attribute("#draw", "class") or "")
+    # la zone est un carre : memes dimensions en metres sur les deux axes (projection locale)
+    w, h = page.evaluate("""() => {
+        const b = square.getBounds(), c = b.getCenter();
+        return [map.distance([c.lat, b.getWest()], [c.lat, b.getEast()]), map.distance([b.getSouth(), c.lng], [b.getNorth(), c.lng])];
+    }""")
+    assert abs(w - side) / side < 0.01 and abs(h - side) / side < 0.01
+    # centre du carre = coordonnees affichees, et pas le point du relachement de la souris
+    lat, lon = (float(v) for v in page.input_value("#coords").split(","))
+    c = page.evaluate("() => square.getBounds().getCenter()")
+    assert abs(lat - c["lat"]) < 1e-5 and abs(lon - c["lng"]) < 1e-5

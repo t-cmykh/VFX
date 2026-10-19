@@ -12,3 +12,7 @@
   font-size: 13px; color: #222; margin: 2px 0;
 }
 .leaflet-control-layers input { min-height: 0; padding: 0; margin: 0 6px 0 0; vertical-align: middle; }
+#side { width: 100px; }
+#draw.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.leaflet-container.drawing, .leaflet-container.drawing .leaflet-interactive { cursor: crosshair; }
+#level { min-width: 190px; }

@@ -134,7 +134,8 @@ class Job {
   }
 
   inArea(obb) {
-    return this.frame.horizontalDistance(obb.center) <= this.p.radius + obb.radius;
+    const [e, n] = this.frame.toEnu(obb.center);
+    return Math.max(Math.abs(e), Math.abs(n)) <= this.p.half + obb.radius;
   }
 
   async collect(root) {
@@ -179,8 +180,8 @@ class Job {
   buildTile(name, node, mesh, exclude, counts) {
     const tri = mesh.triangles;
     const enu = this.frame.toEnu(RT.meshToEcef(node, mesh));
-    const r2 = this.p.radius ** 2;
-    const inside = (v) => enu[3 * v] ** 2 + enu[3 * v + 1] ** 2 <= r2;
+    const h = this.p.half;
+    const inside = (v) => Math.abs(enu[3 * v]) <= h && Math.abs(enu[3 * v + 1]) <= h;
     const keep = [];
     for (let i = 0; i < tri.length; i += 3) {
       const a = tri[i], b = tri[i + 1], c = tri[i + 2];
@@ -243,7 +244,7 @@ class Job {
   async run() {
     const t0 = performance.now(), p = this.p;
     try {
-      this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - rayon ${p.radius} m - niveau ${p.level}`);
+      this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - carré de ${p.side} m - niveau ${p.level}`);
       const root = await this.healthCheck();
       const candidates = await this.collect(root);
       const excl = Job.exclusions(candidates.keys());
@@ -294,30 +295,55 @@ const LEVELS = { 15: "~2 m", 16: "~1 m", 17: "~50 cm", 18: "~25 cm", 19: "~12 cm
 const START = [48.8584, 2.2945];
 
 const map = L.map("map").setView(START, 16);
-// Les serveurs d'OpenStreetMap refusent les pages ouvertes en file:// (pas de Referer) :
-// on passe par CARTO (plan, donnees OSM) et Esri (satellite), qui les acceptent.
-const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-const baseLayers = {
-  "Plan": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20, subdomains: "abcd", attribution: `${OSM_ATTR} &copy; <a href="https://carto.com/attributions">CARTO</a>`,
-  }),
-  "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 19, attribution: "Imagerie &copy; Esri, Maxar, Earthstar Geographics",
-  }),
-};
-baseLayers.Plan.addTo(map);
-L.control.layers(baseLayers, null, { collapsed: false, position: "topright" }).addTo(map);
-const marker = L.marker(START, { draggable: true, icon: L.divIcon({ className: "pin", iconSize: [16, 16] }) }).addTo(map);
-const circle = L.circle(START, { radius: 200, color: "#4c8dff", weight: 2, fillOpacity: 0.12 }).addTo(map);
-
 for (const [lvl, res] of Object.entries(LEVELS)) $("level").add(new Option(`Niveau ${lvl} — ${res}/px`, lvl, false, lvl === "18"));
 
-function setCenter(lat, lon, pan = false) {
+// Fonds de carte. Les serveurs OpenStreetMap refusent les pages ouvertes en file:// et certains
+// fournisseurs demandent une cle : plusieurs choix, le dernier utilise est memorise.
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+const baseLayers = {
+  "Google Satellite": L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", {
+    maxZoom: 21, subdomains: "0123", attribution: "Imagerie &copy; Google",
+  }),
+  "Google Plan": L.tileLayer("https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", {
+    maxZoom: 21, subdomains: "0123", attribution: "Carte &copy; Google",
+  }),
+  "Esri Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "Imagerie &copy; Esri",
+  }),
+  "CARTO Plan": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 20, subdomains: "abcd", attribution: `${OSM_ATTR} &copy; CARTO`,
+  }),
+};
+let savedLayer = null;
+try { savedLayer = localStorage.getItem("earthImporter.layer"); } catch (e) { /* stockage indisponible */ }
+(baseLayers[savedLayer] || baseLayers["Google Satellite"]).addTo(map);
+L.control.layers(baseLayers, null, { collapsed: false, position: "topright" }).addTo(map);
+map.on("baselayerchange", (e) => { try { localStorage.setItem("earthImporter.layer", e.name); } catch (err) { /* idem */ } });
+
+// ---- zone carree : centre + cote en metres
+const MAX_SIDE = 10000;
+function metersPerDegree(lat) {
+  const f = lat * Math.PI / 180;
+  return [111132.954 - 559.822 * Math.cos(2 * f) + 1.175 * Math.cos(4 * f),
+          111412.84 * Math.cos(f) - 93.5 * Math.cos(3 * f)];
+}
+function squareBounds(lat, lon, side) {
+  const [mLat, mLon] = metersPerDegree(lat), h = side / 2;
+  return [[lat - h / mLat, lon - h / mLon], [lat + h / mLat, lon + h / mLon]];
+}
+
+const zone = { lat: START[0], lon: START[1], side: 400 };
+const marker = L.marker(START, { draggable: true, icon: L.divIcon({ className: "pin", iconSize: [16, 16] }) }).addTo(map);
+const square = L.rectangle(squareBounds(zone.lat, zone.lon, zone.side), { color: "#4c8dff", weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
+
+function setZone(lat, lon, side = zone.side, pan = false) {
+  Object.assign(zone, { lat, lon, side: Math.min(MAX_SIDE, Math.round(side)) });
   marker.setLatLng([lat, lon]);
-  circle.setLatLng([lat, lon]);
+  square.setBounds(squareBounds(lat, lon, zone.side));
   $("coords").value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
   $("coords").classList.remove("bad");
-  if (pan) map.fitBounds(circle.getBounds(), { maxZoom: 18 });
+  $("side").value = zone.side;
+  if (pan) map.fitBounds(square.getBounds(), { maxZoom: 18, padding: [30, 30] });
 }
 
 function parseCoords(text) {
@@ -330,16 +356,55 @@ function parseCoords(text) {
 function goToCoords() {
   const c = parseCoords($("coords").value);
   if (!c) { $("coords").classList.add("bad"); ui.log("ERROR", "Coordonnées invalides (format : 48.8584, 2.2945)"); return; }
-  setCenter(c[0], c[1], true);
+  setZone(c[0], c[1], zone.side, true);
 }
 
-map.on("click", (e) => setCenter(e.latlng.lat, e.latlng.lng));
-marker.on("drag", (e) => setCenter(e.latlng.lat, e.latlng.lng));
+// ---- dessin a la main : bouton "Dessiner", puis cliquer-glisser d'un coin a l'autre (toujours un carre)
+let drawMode = false, drawStart = null, justDrew = false;
+function setDrawMode(on) {
+  drawMode = on;
+  drawStart = null;
+  $("draw").classList.toggle("active", on);
+  map.getContainer().classList.toggle("drawing", on);
+  if (on) map.dragging.disable(); else map.dragging.enable();
+}
+function squareFrom(a, b) {
+  const [mLat, mLon] = metersPerDegree(a.lat);
+  const dx = (b.lng - a.lng) * mLon, dy = (b.lat - a.lat) * mLat;
+  const s = Math.min(MAX_SIDE, Math.max(Math.abs(dx), Math.abs(dy)));
+  const lat2 = a.lat + Math.sign(dy || 1) * s / mLat, lon2 = a.lng + Math.sign(dx || 1) * s / mLon;
+  return { lat: (a.lat + lat2) / 2, lon: (a.lng + lon2) / 2, side: s, bounds: [[a.lat, a.lng], [lat2, lon2]] };
+}
+map.on("mousedown", (e) => { if (drawMode) drawStart = e.latlng; });
+map.on("mousemove", (e) => {
+  if (!drawStart) return;
+  const sq = squareFrom(drawStart, e.latlng);
+  square.setBounds(sq.bounds);
+  $("side").value = Math.round(sq.side);
+});
+map.on("mouseup", (e) => {
+  if (!drawStart) return;
+  const sq = squareFrom(drawStart, e.latlng);
+  setDrawMode(false);
+  justDrew = true;
+  setTimeout(() => { justDrew = false; }, 50);
+  if (sq.side < 5) { setZone(zone.lat, zone.lon); return; }  // simple clic : on garde l'ancienne zone
+  setZone(sq.lat, sq.lon, sq.side);
+  ui.log("INFO", `Zone dessinée : carré de ${zone.side} m`);
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && drawMode) { setDrawMode(false); setZone(zone.lat, zone.lon); } });
+
+map.on("click", (e) => { if (!drawMode && !justDrew) setZone(e.latlng.lat, e.latlng.lng); });
+marker.on("drag", (e) => setZone(e.latlng.lat, e.latlng.lng));
+$("draw").onclick = () => setDrawMode(!drawMode);
 $("go").onclick = goToCoords;
 $("coords").addEventListener("keydown", (e) => { if (e.key === "Enter") goToCoords(); });
-$("radius").addEventListener("input", () => { const r = parseFloat($("radius").value); if (r > 0) circle.setRadius(r); });
-$("radius").addEventListener("change", () => map.fitBounds(circle.getBounds(), { maxZoom: 18 }));
-setCenter(...START);
+$("side").addEventListener("input", () => {
+  const v = parseFloat($("side").value);
+  if (v > 0) { zone.side = Math.min(MAX_SIDE, v); square.setBounds(squareBounds(zone.lat, zone.lon, zone.side)); }
+});
+$("side").addEventListener("change", () => setZone(zone.lat, zone.lon, parseFloat($("side").value) || zone.side, true));
+setZone(...START);
 
 const ui = {
   log(level, msg) {
@@ -373,19 +438,20 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "radius", "coords", "go", "name"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name"]) $(id).disabled = running;
+  if (running) setDrawMode(false);
   $("cancel").disabled = !running;
 }
 
 let current = null;
 function launch(estimateOnly) {
   const c = parseCoords($("coords").value);
-  const radius = parseFloat($("radius").value), level = parseInt($("level").value, 10);
+  const side = parseFloat($("side").value), level = parseInt($("level").value, 10);
   if (!c) return ui.log("ERROR", "Coordonnées invalides");
-  if (!(radius >= 1 && radius <= 5000)) return ui.log("ERROR", "Rayon entre 1 et 5000 m");
-  let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_r${radius}_l${level}`;
+  if (!(side >= 2 && side <= MAX_SIDE)) return ui.log("ERROR", `Côté du carré entre 2 et ${MAX_SIDE} m`);
+  let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
-  const p = { lat: c[0], lon: c[1], radius, level, content: $("content").value, fmt: $("fmt").value, name };
+  const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name };
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);
