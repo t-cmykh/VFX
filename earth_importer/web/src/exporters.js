@@ -21,7 +21,7 @@ function writeObj(tiles, name, meta, withTex, flipV) {
   if (withTex) obj.push(`mtllib ${name}.mtl\n`);
   let cv = 0, cvt = 0;
   for (const t of tiles) {
-    const lines = [`o tile_${t.name}\n`];
+    const lines = [`o ${t.label || `tile_${t.name}`}\n`];
     const n = t.pos.length / 3;
     for (let i = 0; i < t.pos.length; i += 3) lines.push(`v ${fmt4(t.pos[i])} ${fmt4(t.pos[i + 1])} ${fmt4(t.pos[i + 2])}\n`);
     const hasUv = withTex && t.uv;
@@ -110,7 +110,7 @@ ${t.texture ? `
     for (let i = 0; i < t.pos.length; i += 3) pts.push(`(${fmt4(t.pos[i])}, ${fmt4(t.pos[i + 1])}, ${fmt4(t.pos[i + 2])})`);
     const binding = withTex && t.uv;
     if (binding) for (let i = 0; i < n; i++) st.push(`(${fmt6(t.uv[2 * i])}, ${fmt6(uvForObj(t.uv[2 * i + 1], flipV))})`);
-    out.push(`    def Mesh "tile_${t.name}"${binding ? ` (\n        prepend apiSchemas = ["MaterialBindingAPI"]\n    )` : ""}
+    out.push(`    def Mesh "${t.label || `tile_${t.name}`}"${binding ? ` (\n        prepend apiSchemas = ["MaterialBindingAPI"]\n    )` : ""}
     {
         uniform token subdivisionScheme = "none"
         int[] faceVertexCounts = [${new Array(nf).fill(3).join(", ")}]
@@ -173,8 +173,9 @@ function writeGlb(tiles, name, meta, withTex, flipV) {
       json.materials.push(mat);
       prim.material = json.materials.length - 1;
     }
-    json.meshes.push({ name: `tile_${t.name}`, primitives: [prim] });
-    json.nodes.push({ name: `tile_${t.name}`, mesh: json.meshes.length - 1 });
+    const label = t.label || `tile_${t.name}`;
+    json.meshes.push({ name: label, primitives: [prim] });
+    json.nodes.push({ name: label, mesh: json.meshes.length - 1 });
     json.scenes[0].nodes.push(json.nodes.length - 1);
   }
   for (const k of ["materials", "textures", "images"]) if (!json[k].length) delete json[k];

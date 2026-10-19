@@ -786,6 +786,22 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
       <option value="geo">Géométrie seule</option>
     </select>
   </label>
+  <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
+    <select id="merge">
+      <option value="0">Tuiles séparées</option>
+      <option value="1">1 objet + 1 texture</option>
+    </select>
+  </label>
+  <label title="Côté de la texture fusionnée. Auto = résolution d'origine des tuiles (jusqu'à 16384)">Atlas
+    <select id="atlas">
+      <option value="auto">Auto (max)</option>
+      <option value="1024">1024 px</option>
+      <option value="2048">2048 px</option>
+      <option value="4096">4096 px</option>
+      <option value="8192" selected>8192 px</option>
+      <option value="16384">16384 px</option>
+    </select>
+  </label>
   <label title="À cocher seulement si les textures sortent à l'envers">Textures
     <span class="check"><input id="flipv" type="checkbox"> Inverser V</span>
   </label>
@@ -1115,7 +1131,7 @@ function writeObj(tiles, name, meta, withTex, flipV) {
   if (withTex) obj.push(`mtllib ${name}.mtl\n`);
   let cv = 0, cvt = 0;
   for (const t of tiles) {
-    const lines = [`o tile_${t.name}\n`];
+    const lines = [`o ${t.label || `tile_${t.name}`}\n`];
     const n = t.pos.length / 3;
     for (let i = 0; i < t.pos.length; i += 3) lines.push(`v ${fmt4(t.pos[i])} ${fmt4(t.pos[i + 1])} ${fmt4(t.pos[i + 2])}\n`);
     const hasUv = withTex && t.uv;
@@ -1204,7 +1220,7 @@ ${t.texture ? `
     for (let i = 0; i < t.pos.length; i += 3) pts.push(`(${fmt4(t.pos[i])}, ${fmt4(t.pos[i + 1])}, ${fmt4(t.pos[i + 2])})`);
     const binding = withTex && t.uv;
     if (binding) for (let i = 0; i < n; i++) st.push(`(${fmt6(t.uv[2 * i])}, ${fmt6(uvForObj(t.uv[2 * i + 1], flipV))})`);
-    out.push(`    def Mesh "tile_${t.name}"${binding ? ` (\n        prepend apiSchemas = ["MaterialBindingAPI"]\n    )` : ""}
+    out.push(`    def Mesh "${t.label || `tile_${t.name}`}"${binding ? ` (\n        prepend apiSchemas = ["MaterialBindingAPI"]\n    )` : ""}
     {
         uniform token subdivisionScheme = "none"
         int[] faceVertexCounts = [${new Array(nf).fill(3).join(", ")}]
@@ -1267,8 +1283,9 @@ function writeGlb(tiles, name, meta, withTex, flipV) {
       json.materials.push(mat);
       prim.material = json.materials.length - 1;
     }
-    json.meshes.push({ name: `tile_${t.name}`, primitives: [prim] });
-    json.nodes.push({ name: `tile_${t.name}`, mesh: json.meshes.length - 1 });
+    const label = t.label || `tile_${t.name}`;
+    json.meshes.push({ name: label, primitives: [prim] });
+    json.nodes.push({ name: label, mesh: json.meshes.length - 1 });
     json.scenes[0].nodes.push(json.nodes.length - 1);
   }
   for (const k of ["materials", "textures", "images"]) if (!json[k].length) delete json[k];
@@ -1354,6 +1371,150 @@ function makeZip(files) {
 const EXPORTERS = { obj: writeObj, usd: writeUsda, glb: writeGlb };
 
 if (typeof module !== "undefined") module.exports = { EXPORTERS, makeZip, crc32 };
+
+</script>
+<script>
+"use strict";
+// Fusion a l'export : toutes les tuiles -> un seul maillage, toutes les textures -> un atlas.
+// De chaque texture on ne garde que le rectangle reellement utilise par les UV de la tuile
+// (apres decoupe a la zone), puis ces rectangles sont ranges dans une image carree.
+
+const ATLAS_PAD = 2;      // pixels source gardes autour de la zone utilisee (evite les coutures au filtrage)
+const ATLAS_FILL = 0.85;  // remplissage vise par le rangement en etageres
+const ATLAS_MAX = 16384;
+const ATLAS_GREY = "#808080";
+
+// Rangement en etageres, du plus haut au plus bas. Ecrit x/y dans chaque rectangle, false si ca deborde.
+function packShelves(rects, size) {
+  const order = rects.map((_, i) => i).sort((a, b) => rects[b].h - rects[a].h || rects[b].w - rects[a].w);
+  let x = 0, y = 0, rowH = 0;
+  for (const i of order) {
+    const r = rects[i];
+    if (r.w > size || r.h > size) return false;
+    if (x + r.w > size) { x = 0; y += rowH; rowH = 0; }
+    if (y + r.h > size) return false;
+    r.x = x; r.y = y;
+    x += r.w;
+    rowH = Math.max(rowH, r.h);
+  }
+  return true;
+}
+
+function makeCanvas(size) {
+  if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(size, size);
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  return c;
+}
+
+async function canvasToJpeg(canvas, quality) {
+  const blob = canvas.convertToBlob
+    ? await canvas.convertToBlob({ type: "image/jpeg", quality })
+    : await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+  if (!blob) throw new Error("Atlas trop grand pour ce navigateur : choisis une résolution plus basse.");
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+function mergeGeometry(tiles, withUv) {
+  let nv = 0, nf = 0;
+  for (const t of tiles) { nv += t.pos.length / 3; nf += t.faces.length; }
+  const pos = new Float64Array(3 * nv), faces = new Uint32Array(nf);
+  const offsets = [];
+  let ov = 0, of = 0;
+  for (const t of tiles) {
+    pos.set(t.pos, 3 * ov);
+    for (let i = 0; i < t.faces.length; i++) faces[of + i] = t.faces[i] + ov;
+    offsets.push(ov);
+    ov += t.pos.length / 3;
+    of += t.faces.length;
+  }
+  return { name: "fusion", label: "fusion", pos, faces, uv: withUv ? new Float64Array(2 * nv) : null, texture: null, offsets };
+}
+
+// resolution : nombre (cote de l'atlas en px) ou "auto" (pleine resolution des sources, plafonnee).
+// flipV : meme sens que pour les exporteurs ; les UV de sortie gardent la convention des tuiles.
+async function mergeTiles(tiles, { withTex, flipV, resolution, quality = 0.9, log = () => {} }) {
+  const merged = mergeGeometry(tiles, withTex);
+  if (!withTex) return merged;
+
+  // v (convention des tuiles) <-> y depuis le haut de l'image, en fraction
+  const toTop = (v) => (flipV ? v : 1 - v);
+  const fromTop = (y) => (flipV ? y : 1 - y);
+
+  const rects = [];
+  const sources = [];
+  for (const [k, t] of tiles.entries()) {
+    if (!t.uv || !t.texture) { sources.push(null); continue; }
+    let img;
+    try {
+      img = await createImageBitmap(new Blob([t.texture], { type: "image/jpeg" }));
+    } catch (e) {
+      log("WARN", `Texture illisible ignorée (tuile ${t.name})`);
+      sources.push(null);
+      continue;
+    }
+    const W = img.width, H = img.height;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let i = 0; i < t.uv.length; i += 2) {
+      const x = t.uv[i] * W, y = toTop(t.uv[i + 1]) * H;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    const sx = Math.max(0, Math.floor(x0) - ATLAS_PAD), ex = Math.min(W, Math.ceil(x1) + ATLAS_PAD);
+    const sy = Math.max(0, Math.floor(y0) - ATLAS_PAD), ey = Math.min(H, Math.ceil(y1) + ATLAS_PAD);
+    const src = { k, img, W, H, sx, sy, sw: Math.max(1, ex - sx), sh: Math.max(1, ey - sy) };
+    sources.push(src);
+    rects.push(src);
+  }
+  const grey = { grey: true, sw: 4, sh: 4 };  // pour les tuiles sans texture (CRN, illisible)
+  if (sources.some((s, k) => !s && tiles[k].uv)) rects.push(grey);
+  if (!rects.length) return merged;
+
+  const area = rects.reduce((a, r) => a + r.sw * r.sh, 0);
+  let size = resolution === "auto"
+    ? Math.min(ATLAS_MAX, Math.max(256, 2 ** Math.ceil(Math.log2(Math.sqrt(area / ATLAS_FILL)))))
+    : Number(resolution);
+  let scale = Math.min(1, Math.sqrt((size * size * ATLAS_FILL) / area));
+  for (let tries = 0; ; tries++) {
+    for (const r of rects) { r.w = Math.max(1, Math.round(r.sw * scale)); r.h = Math.max(1, Math.round(r.sh * scale)); }
+    if (packShelves(rects, size)) break;
+    if (tries > 60) throw new Error("Impossible de ranger les textures dans l'atlas.");
+    scale *= 0.95;
+  }
+
+  const canvas = makeCanvas(size);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = ATLAS_GREY;
+  ctx.fillRect(0, 0, size, size);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  for (const r of rects) if (!r.grey) ctx.drawImage(r.img, r.sx, r.sy, r.sw, r.sh, r.x, r.y, r.w, r.h);
+
+  for (const [k, t] of tiles.entries()) {
+    if (!t.uv) continue;
+    const off = 2 * merged.offsets[k], s = sources[k];
+    for (let i = 0; i < t.uv.length; i += 2) {
+      let ax, ay;
+      if (s) {
+        ax = s.x + (t.uv[i] * s.W - s.sx) * (s.w / s.sw);
+        ay = s.y + (toTop(t.uv[i + 1]) * s.H - s.sy) * (s.h / s.sh);
+      } else {
+        ax = grey.x + grey.w / 2;
+        ay = grey.y + grey.h / 2;
+      }
+      merged.uv[off + i] = ax / size;
+      merged.uv[off + i + 1] = fromTop(ay / size);
+    }
+  }
+  for (const s of sources) if (s) s.img.close();
+
+  merged.texture = await canvasToJpeg(canvas, quality);
+  const pct = Math.round(scale * 100);
+  log(pct < 100 ? "WARN" : "INFO",
+    `Atlas ${size}×${size} px : ${sources.filter(Boolean).length} textures, à ${pct} % de leur résolution d'origine` +
+    (pct < 100 ? " (monte la résolution de l'atlas pour garder plus de détail)" : ""));
+  return merged;
+}
 
 </script>
 <script>
@@ -1617,7 +1778,13 @@ class Job {
         this.ui.done("estimate", `Estimation : ${todo.size} tuiles`);
         return;
       }
-      const tiles = await this.download(todo, excl);
+      let tiles = await this.download(todo, excl);
+      if (p.merge) {
+        this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
+        await sleep(0, this.abort.signal);
+        tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
+        this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+      }
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
       const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
@@ -1797,7 +1964,8 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas"]) $(id).disabled = running;
+  if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
 }
@@ -1811,13 +1979,21 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked };
+              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value };
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);
   current = new Job(p, ui, estimateOnly);
   current.run();
 }
+
+// l'atlas n'a de sens que si on fusionne avec les textures
+function syncAtlas() {
+  $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
+}
+$("merge").addEventListener("change", syncAtlas);
+$("content").addEventListener("change", syncAtlas);
+syncAtlas();
 
 $("download").onclick = () => launch(false);
 $("estimate").onclick = () => launch(true);

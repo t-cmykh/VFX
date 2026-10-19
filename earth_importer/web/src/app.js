@@ -258,7 +258,13 @@ class Job {
         this.ui.done("estimate", `Estimation : ${todo.size} tuiles`);
         return;
       }
-      const tiles = await this.download(todo, excl);
+      let tiles = await this.download(todo, excl);
+      if (p.merge) {
+        this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
+        await sleep(0, this.abort.signal);
+        tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
+        this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+      }
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
       const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
@@ -438,7 +444,8 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas"]) $(id).disabled = running;
+  if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
 }
@@ -452,13 +459,21 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked };
+              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value };
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);
   current = new Job(p, ui, estimateOnly);
   current.run();
 }
+
+// l'atlas n'a de sens que si on fusionne avec les textures
+function syncAtlas() {
+  $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
+}
+$("merge").addEventListener("change", syncAtlas);
+$("content").addEventListener("change", syncAtlas);
+syncAtlas();
 
 $("download").onclick = () => launch(false);
 $("estimate").onclick = () => launch(true);

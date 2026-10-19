@@ -32,6 +32,22 @@
       <option value="geo">Géométrie seule</option>
     </select>
   </label>
+  <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
+    <select id="merge">
+      <option value="0">Tuiles séparées</option>
+      <option value="1">1 objet + 1 texture</option>
+    </select>
+  </label>
+  <label title="Côté de la texture fusionnée. Auto = résolution d'origine des tuiles (jusqu'à 16384)">Atlas
+    <select id="atlas">
+      <option value="auto">Auto (max)</option>
+      <option value="1024">1024 px</option>
+      <option value="2048">2048 px</option>
+      <option value="4096">4096 px</option>
+      <option value="8192" selected>8192 px</option>
+      <option value="16384">16384 px</option>
+    </select>
+  </label>
   <label title="À cocher seulement si les textures sortent à l'envers">Textures
     <span class="check"><input id="flipv" type="checkbox"> Inverser V</span>
   </label>
@@ -60,6 +76,7 @@
 <!-- @inline-js ../../ui/vendor/leaflet/leaflet.js -->
 <!-- @inline-js rocktree.js -->
 <!-- @inline-js exporters.js -->
+<!-- @inline-js merge.js -->
 <!-- @inline-js app.js -->
 </body>
 </html>

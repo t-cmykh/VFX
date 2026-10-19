@@ -44,6 +44,12 @@ Téléchargements.
 
 - Formats : **OBJ**, **USD** (`.usda`, matériaux `UsdPreviewSurface`, textures en `clamp`) et
   **GLB**. Pas d'Alembic (impossible dans un navigateur) : utiliser la version Python pour l'ABC.
+- **Fusion** (menu « Fusion ») : *Tuiles séparées*, ou *1 objet + 1 texture* : toutes les tuiles
+  en un seul maillage et toutes les textures dans un **atlas** (`textures/fusion.jpg`). Seule la
+  partie de chaque texture réellement utilisée par la zone y est rangée, et les UV sont recalculées.
+  Menu « Atlas » : 1024 à 16384 px, ou *Auto* = la plus petite taille qui garde la résolution
+  d'origine (plafonnée à 16384). Le log indique le pourcentage de résolution conservé ; sous 100 %,
+  monter la taille de l'atlas. Les sommets des bords de tuiles ne sont pas soudés.
 - Tout se passe en mémoire : pour de très grandes zones, préférer la version Python.
 - Fermer ou recharger la page vide le cache (relancer après une annulation ne retélécharge rien
   tant que la page reste ouverte).
