@@ -294,10 +294,19 @@ const LEVELS = { 15: "~2 m", 16: "~1 m", 17: "~50 cm", 18: "~25 cm", 19: "~12 cm
 const START = [48.8584, 2.2945];
 
 const map = L.map("map").setView(START, 16);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+// Les serveurs d'OpenStreetMap refusent les pages ouvertes en file:// (pas de Referer) :
+// on passe par CARTO (plan, donnees OSM) et Esri (satellite), qui les acceptent.
+const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+const baseLayers = {
+  "Plan": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+    maxZoom: 20, subdomains: "abcd", attribution: `${OSM_ATTR} &copy; <a href="https://carto.com/attributions">CARTO</a>`,
+  }),
+  "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "Imagerie &copy; Esri, Maxar, Earthstar Geographics",
+  }),
+};
+baseLayers.Plan.addTo(map);
+L.control.layers(baseLayers, null, { collapsed: false, position: "topright" }).addTo(map);
 const marker = L.marker(START, { draggable: true, icon: L.divIcon({ className: "pin", iconSize: [16, 16] }) }).addTo(map);
 const circle = L.circle(START, { radius: 200, color: "#4c8dff", weight: 2, fillOpacity: 0.12 }).addTo(map);
 

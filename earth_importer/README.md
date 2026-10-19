@@ -47,6 +47,8 @@ Téléchargements.
 - Tout se passe en mémoire : pour de très grandes zones, préférer la version Python.
 - Fermer ou recharger la page vide le cache (relancer après une annulation ne retélécharge rien
   tant que la page reste ouverte).
+- Fond de carte : CARTO (plan) ou Esri (satellite). Les serveurs OpenStreetMap refusent les pages
+  ouvertes en `file://`.
 - Si le log affiche « requête bloquée par le navigateur (CORS) », Google refuse les requêtes
   venant d'une page locale : utiliser la version Python, qui n'a pas cette limite.
 - Le fichier est généré depuis `web/src/` par `python web/build.py` (ne pas le modifier à la main).
