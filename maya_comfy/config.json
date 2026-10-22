@@ -1,0 +1,16 @@
+{
+  "server": "127.0.0.1:8188",
+  "workflow_image": "workflows/qwen_image_api.json",
+  "workflow_anim": "workflows/ltx_anim_api.json",
+  "image_long_side": 1024,
+  "image_size_multiple": 16,
+  "anim_long_side": 512,
+  "anim_size_multiple": 32,
+  "anim_frame_step": 8,
+  "anim_max_frames": 49,
+  "free_vram_between_models": true,
+  "ffmpeg": "ffmpeg",
+  "poll_seconds": 1.0,
+  "timeout_seconds": 3600,
+  "open_anim_when_done": true
+}

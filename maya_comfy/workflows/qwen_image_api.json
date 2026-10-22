@@ -1,0 +1,15 @@
+{
+  "1": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": "qwen-image-Q4_K_M.gguf"}, "_meta": {"title": "Unet Loader (GGUF)"}},
+  "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"model": ["1", 0], "lora_name": "Qwen-Image-Lightning-8steps-V1.1.safetensors", "strength_model": 1.0}, "_meta": {"title": "LoRA Lightning 8 steps"}},
+  "3": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["2", 0], "shift": 3.1}, "_meta": {"title": "ModelSamplingAuraFlow"}},
+  "4": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "cpu"}, "_meta": {"title": "Encodeur texte (CPU)"}},
+  "5": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}, "_meta": {"title": "VAE"}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 0]}, "_meta": {"title": "MAYA_PROMPT"}},
+  "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["4", 0]}, "_meta": {"title": "MAYA_NEGATIVE"}},
+  "8": {"class_type": "LoadImage", "inputs": {"image": "example.png"}, "_meta": {"title": "MAYA_IMAGE"}},
+  "9": {"class_type": "ImageScale", "inputs": {"image": ["8", 0], "upscale_method": "lanczos", "width": 1024, "height": 576, "crop": "center"}, "_meta": {"title": "MAYA_SIZE"}},
+  "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["9", 0], "vae": ["5", 0]}, "_meta": {"title": "VAE Encode"}},
+  "11": {"class_type": "KSampler", "inputs": {"model": ["3", 0], "seed": 0, "steps": 8, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0], "denoise": 0.65}, "_meta": {"title": "MAYA_SEED MAYA_DENOISE"}},
+  "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["5", 0]}, "_meta": {"title": "VAE Decode"}},
+  "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": "maya_comfy/qwen"}, "_meta": {"title": "Save Image"}}
+}
