@@ -31,7 +31,6 @@
   <label>Contenu
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
-      <option value="geo">Géométrie seule</option>
       <option value="none">Rien (LiDAR seul)</option>
     </select>
   </label>
@@ -42,17 +41,6 @@
       <option value="mnt">MNT (sol nu)</option>
       <option value="both">MNS + MNT</option>
     </select>
-  </label>
-  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
-    <select id="lidarres">
-      <option value="0.5">0,5 m</option>
-      <option value="1" selected>1 m</option>
-      <option value="2">2 m</option>
-      <option value="5">5 m</option>
-    </select>
-  </label>
-  <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
-    <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
   </label>
   <label title="Projette la texture de la 3D Google (vue de dessus) sur le maillage LiDAR. Demande Contenu = Géométrie + textures">Texture LiDAR
     <select id="lidartex">

@@ -572,7 +572,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align", "lidartex"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "merge", "atlas", "lidar", "lidartex"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -588,8 +588,8 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked,
+              flipV: CONFIG.flipV, merge: $("merge").value === "1", atlas: $("atlas").value,
+              lidar: $("lidar").value, lidarRes: LIDAR_CONFIG.res, align: true,
               lidarTex: parseInt($("lidartex").value, 10) };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
@@ -603,8 +603,6 @@ function launch(estimateOnly) {
 function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
   $("merge").disabled = $("content").value === "none";
-  $("lidarres").disabled = $("lidar").value === "none";
-  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
   $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncAtlas);

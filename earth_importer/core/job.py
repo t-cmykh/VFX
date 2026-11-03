@@ -36,7 +36,7 @@ class Params:
     name: str = ""
     crop: bool = True
     lidar: str = "none"        # LiDAR HD IGN maille : "none" | "mns" | "mnt" | "both"
-    lidar_res: float = 1.0     # pas de la grille LiDAR (m)
+    lidar_res: float = 0.5     # pas de la grille LiDAR (m) : resolution native
     laz: bool = False          # dalles brutes du nuage de points LiDAR HD
     align: bool = True         # cale le LiDAR sur la 3D Google (decalage Est/Nord/haut)
     lidar_tex: int = 4096      # texture du LiDAR = vue de dessus de la 3D Google (px), 0 = aucune

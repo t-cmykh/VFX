@@ -46,7 +46,7 @@ def page():
         assert not errors, errors
 
 
-@pytest.mark.parametrize("fmt,ext", [("obj", "obj"), ("usd", "usda"), ("glb", "glb")])
+@pytest.mark.parametrize("fmt,ext", [("obj", "obj"), ("usd", "usda")])
 def test_web_export(page, tmp_path, fmt, ext):
     srv = fk.FakeServer()
     try:
@@ -70,10 +70,8 @@ def test_web_export(page, tmp_path, fmt, ext):
         assert sum(1 for line in lines if line.startswith("f ")) == 44  # comme test_pipeline
         ys = [float(line.split()[2]) for line in lines if line.startswith("v ")]
         assert abs(sum(ys) / len(ys) - 35) < 0.5  # hauteur du faux monde : meme repere (sphere) que Python
-    elif fmt == "usd":
-        assert data.decode().count("faceVertexCounts") == 2
     else:
-        assert data[:4] == b"glTF"
+        assert data.decode().count("faceVertexCounts") == 2
     assert not any(f"306047" in n for n in names)  # tuile hors zone
 
 
@@ -94,6 +92,10 @@ def test_controls_populated(page):
     page.goto((ROOT / "EarthImporter.html").as_uri())
     assert page.locator("#level").count() == 0          # toujours la meilleure definition
     assert page.locator(".leaflet-control-layers").count() == 0  # un seul fond de carte
+    for gone in ("#lidarres", "#align", "#flipv"):                  # options retirees
+        assert page.locator(gone).count() == 0
+    assert page.eval_on_selector_all("#content option", "els => els.map(e => e.value)") == ["geo_tex", "none"]
+    assert page.eval_on_selector_all("#fmt option", "els => els.map(e => e.value)") == ["obj", "usd"]
     assert page.input_value("#side") == "400" and page.input_value("#coords")
 
 
@@ -192,7 +194,7 @@ def jpeg_size(data):
     raise ValueError("pas de SOF")
 
 
-@pytest.mark.parametrize("fmt,ext", [("obj", "obj"), ("glb", "glb")])
+@pytest.mark.parametrize("fmt,ext", [("obj", "obj"), ("usd", "usda")])
 def test_web_merged_export(page, tmp_path, fmt, ext):
     srv = fk.FakeServer()
     try:
@@ -218,7 +220,7 @@ def test_web_merged_export(page, tmp_path, fmt, ext):
         vts = [tuple(map(float, l.split()[1:])) for l in text.splitlines() if l.startswith("vt ")]
         assert all(0 <= u <= 1 and 0 <= v <= 1 for u, v in vts)
     else:
-        assert data.count(b'"primitives"') == 1
+        assert data.decode().count("faceVertexCounts") == 1
 
 
 def test_web_frame_matches_reference_camera(page):
@@ -236,7 +238,6 @@ def test_web_lidar(page, tmp_path):
         page.goto((ROOT / "EarthImporter.html").as_uri() + "?ign=" + ign.url)
         page.select_option("#content", "none")
         page.select_option("#lidar", "both")
-        page.select_option("#lidarres", "2")
         page.fill("#side", "200")
         page.press("#side", "Enter")
         page.fill("#name", "t")

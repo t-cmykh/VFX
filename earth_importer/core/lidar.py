@@ -154,8 +154,8 @@ class Lidar:
         h, w = self.grid_shape()
         limit = int(self.cfg.get("max_vertices", 25_000_000))
         if h * w > limit:
-            raise RuntimeError(f"Zone trop grande pour un pas de {self.res:g} m ({w} x {h} points) : "
-                               f"augmente le pas LiDAR ou reduis la zone")
+            raise RuntimeError(f"Zone trop grande pour le LiDAR a {self.res:g} m ({w} x {h} points) : "
+                               f"reduis la zone")
         return h, w
 
     def estimate(self):

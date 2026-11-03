@@ -820,7 +820,6 @@ label.place { position: relative; }
   <label>Contenu
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
-      <option value="geo">Géométrie seule</option>
       <option value="none">Rien (LiDAR seul)</option>
     </select>
   </label>
@@ -831,17 +830,6 @@ label.place { position: relative; }
       <option value="mnt">MNT (sol nu)</option>
       <option value="both">MNS + MNT</option>
     </select>
-  </label>
-  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
-    <select id="lidarres">
-      <option value="0.5">0,5 m</option>
-      <option value="1" selected>1 m</option>
-      <option value="2">2 m</option>
-      <option value="5">5 m</option>
-    </select>
-  </label>
-  <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
-    <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
   </label>
   <label title="Projette la texture de la 3D Google (vue de dessus) sur le maillage LiDAR. Demande Contenu = Géométrie + textures">Texture LiDAR
     <select id="lidartex">
@@ -867,9 +855,6 @@ label.place { position: relative; }
       <option value="16384">16384 px</option>
     </select>
   </label>
-  <label title="À cocher seulement si les textures sortent à l'envers">Textures
-    <span class="check"><input id="flipv" type="checkbox"> Inverser V</span>
-  </label>
   <label class="grow">Nom
     <input id="name" placeholder="auto">
   </label>
@@ -880,7 +865,6 @@ label.place { position: relative; }
     <select id="fmt" title="Format d'export">
       <option value="obj">OBJ</option>
       <option value="usd">USD</option>
-      <option value="glb">GLB</option>
     </select>
   </span>
 </section>
@@ -2563,6 +2547,7 @@ const LIDAR_CONFIG = {
   validRange: [-500, 5000],
   zOffset: 0,
   maxVertices: 16e6,
+  res: 0.5,              // pas de la grille (m) : resolution native du LiDAR HD
 };
 const ignBase = typeof location !== "undefined" ? new URLSearchParams(location.search).get("ign") : null;  // tests : faux services IGN
 if (ignBase) LIDAR_CONFIG.wms = ignBase + "/wms";
@@ -2611,7 +2596,7 @@ const LIDAR = {
   checkSize(p) {
     const [h, w] = LIDAR.shape(p, p.lidarRes);
     if (h * w > LIDAR_CONFIG.maxVertices)
-      throw new Error(`Zone trop grande pour un pas LiDAR de ${p.lidarRes} m (${w} x ${h} points) : augmente le pas ou réduis la zone`);
+      throw new Error(`Zone trop grande pour le LiDAR à ${p.lidarRes} m (${w} x ${h} points) : réduis la zone`);
     return [h, w];
   },
 
@@ -2902,7 +2887,7 @@ const BAKE = {
 </script>
 <script>
 "use strict";
-// Ecriture OBJ / USDA / GLB et archive ZIP, sans dependance.
+// Ecriture OBJ / USDA et archive ZIP, sans dependance.
 // Une tuile : { name, pos: Float64Array (x,y,z en metres, Y en haut, X = Est, -Z = Nord),
 //               faces: Uint32Array (indices locaux), uv: Float64Array|null (convention OpenGL),
 //               texture: Uint8Array|null (JPEG) }
@@ -2910,9 +2895,8 @@ const BAKE = {
 const enc = new TextEncoder();
 
 // UV rocktree = (u + offset) * scale. Le decodeur de Google retourne ensuite V : c'est ce que font
-// OBJ et USD quand flipV est actif ; glTF (origine en haut de l'image) prend l'inverse.
+// OBJ et USD quand flipV est actif.
 function uvForObj(v, flipV) { return flipV ? 1 - v : v; }
-function uvForGltf(v, flipV) { return flipV ? v : 1 - v; }
 
 const fmt4 = (x) => x.toFixed(4);
 const fmt6 = (x) => x.toFixed(6);
@@ -3031,73 +3015,6 @@ ${binding ? `        texCoord2f[] primvars:st = [${st.join(", ")}] (
   return [[`${name}/${name}.usda`, out]];
 }
 
-// ---------------------------------------------------------------- GLB (glTF 2.0)
-function writeGlb(tiles, name, meta, withTex, flipV) {
-  const chunks = [];
-  let offset = 0;
-  const json = {
-    asset: { version: "2.0", generator: "Earth Importer", extras: { origin: [meta.lat, meta.lon] } },
-    scene: 0, scenes: [{ nodes: [] }], nodes: [], meshes: [], accessors: [], bufferViews: [],
-    buffers: [], materials: [], textures: [], images: [],
-    samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 33071, wrapT: 33071 }],
-  };
-  function view(bytes, target) {
-    const pad = (4 - (offset % 4)) % 4;
-    if (pad) { chunks.push(new Uint8Array(pad)); offset += pad; }
-    json.bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: bytes.byteLength, ...(target ? { target } : {}) });
-    chunks.push(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    offset += bytes.byteLength;
-    return json.bufferViews.length - 1;
-  }
-  function accessor(arr, comps, type, componentType, target, minmax) {
-    const a = { bufferView: view(arr, target), componentType, count: arr.length / comps, type };
-    if (minmax) Object.assign(a, minmax);
-    json.accessors.push(a);
-    return json.accessors.length - 1;
-  }
-  for (const t of tiles) {
-    const n = t.pos.length / 3;
-    const pos = Float32Array.from(t.pos);
-    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < pos.length; i += 3)
-      for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], pos[i + k]); max[k] = Math.max(max[k], pos[i + k]); }
-    const attributes = { POSITION: accessor(pos, 3, "VEC3", 5126, 34962, { min, max }) };
-    const prim = { attributes, indices: accessor(Uint32Array.from(t.faces), 1, "SCALAR", 5125, 34963), mode: 4 };
-    if (withTex && t.uv) {
-      const uv = new Float32Array(2 * n);
-      for (let i = 0; i < n; i++) { uv[2 * i] = t.uv[2 * i]; uv[2 * i + 1] = uvForGltf(t.uv[2 * i + 1], flipV); }
-      attributes.TEXCOORD_0 = accessor(uv, 2, "VEC2", 5126, 34962);
-      const mat = { name: `m_${t.name}`, pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: 1 } };
-      if (t.texture) {
-        json.images.push({ bufferView: view(t.texture), mimeType: "image/jpeg", name: t.name });
-        json.textures.push({ source: json.images.length - 1, sampler: 0 });
-        mat.pbrMetallicRoughness.baseColorTexture = { index: json.textures.length - 1 };
-      }
-      json.materials.push(mat);
-      prim.material = json.materials.length - 1;
-    }
-    const label = t.label || `tile_${t.name}`;
-    json.meshes.push({ name: label, primitives: [prim] });
-    json.nodes.push({ name: label, mesh: json.meshes.length - 1 });
-    json.scenes[0].nodes.push(json.nodes.length - 1);
-  }
-  for (const k of ["materials", "textures", "images"]) if (!json[k].length) delete json[k];
-  if (!json.textures) delete json.samplers;
-  const binPad = (4 - (offset % 4)) % 4;
-  if (binPad) { chunks.push(new Uint8Array(binPad)); offset += binPad; }
-  json.buffers.push({ byteLength: offset });
-  let jsonBytes = enc.encode(JSON.stringify(json));
-  const jpad = (4 - (jsonBytes.length % 4)) % 4;
-  if (jpad) jsonBytes = concat([jsonBytes, enc.encode(" ".repeat(jpad))]);
-  const total = 12 + 8 + jsonBytes.length + 8 + offset;
-  const head = new DataView(new ArrayBuffer(20));
-  head.setUint32(0, 0x46546c67, true); head.setUint32(4, 2, true); head.setUint32(8, total, true);
-  head.setUint32(12, jsonBytes.length, true); head.setUint32(16, 0x4e4f534a, true);
-  const binHead = new DataView(new ArrayBuffer(8));
-  binHead.setUint32(0, offset, true); binHead.setUint32(4, 0x004e4942, true);
-  return [[`${name}/${name}.glb`, [new Uint8Array(head.buffer), jsonBytes, new Uint8Array(binHead.buffer), ...chunks]]];
-}
-
 // ---------------------------------------------------------------- ZIP (stockage sans compression)
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -3161,7 +3078,7 @@ function makeZip(files) {
   return new Blob([...out, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
 }
 
-const EXPORTERS = { obj: writeObj, usd: writeUsda, glb: writeGlb };
+const EXPORTERS = { obj: writeObj, usd: writeUsda };
 
 if (typeof module !== "undefined") module.exports = { EXPORTERS, makeZip, crc32 };
 
@@ -3885,7 +3802,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align", "lidartex"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "merge", "atlas", "lidar", "lidartex"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -3901,8 +3818,8 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked,
+              flipV: CONFIG.flipV, merge: $("merge").value === "1", atlas: $("atlas").value,
+              lidar: $("lidar").value, lidarRes: LIDAR_CONFIG.res, align: true,
               lidarTex: parseInt($("lidartex").value, 10) };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
@@ -3916,8 +3833,6 @@ function launch(estimateOnly) {
 function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
   $("merge").disabled = $("content").value === "none";
-  $("lidarres").disabled = $("lidar").value === "none";
-  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
   $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncAtlas);

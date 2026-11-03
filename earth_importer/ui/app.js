@@ -117,7 +117,7 @@ function progress(phase, done, total) {
 }
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "radius", "coords", "go", "outdir", "lidar", "lidarres", "laz", "align", "lidartex"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "radius", "coords", "go", "outdir", "lidar", "laz", "lidartex"]) $(id).disabled = running;
   if (!running) syncLidar();
   $("cancel").disabled = !running;
 }
@@ -134,16 +134,14 @@ function params() {
     out_dir: $("outdir").value.trim(),
     name: $("name").value.trim(),
     lidar: $("lidar").value,
-    lidar_res: parseFloat($("lidarres").value),
+    lidar_res: 0.5,
     laz: $("laz").checked,
-    align: $("align").checked,
+    align: true,
     lidar_tex: parseInt($("lidartex").value, 10),
   };
 }
 
 function syncLidar() {
-  $("lidarres").disabled = $("lidar").value === "none";
-  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
   $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncLidar);
