@@ -1,5 +1,5 @@
 "use strict";
-// Ecriture OBJ / USDA / GLB et archive ZIP, sans dependance.
+// Ecriture OBJ / USDA et archive ZIP, sans dependance.
 // Une tuile : { name, pos: Float64Array (x,y,z en metres, Y en haut, X = Est, -Z = Nord),
 //               faces: Uint32Array (indices locaux), uv: Float64Array|null (convention OpenGL),
 //               texture: Uint8Array|null (JPEG) }
@@ -7,9 +7,8 @@
 const enc = new TextEncoder();
 
 // UV rocktree = (u + offset) * scale. Le decodeur de Google retourne ensuite V : c'est ce que font
-// OBJ et USD quand flipV est actif ; glTF (origine en haut de l'image) prend l'inverse.
+// OBJ et USD quand flipV est actif.
 function uvForObj(v, flipV) { return flipV ? 1 - v : v; }
-function uvForGltf(v, flipV) { return flipV ? v : 1 - v; }
 
 const fmt4 = (x) => x.toFixed(4);
 const fmt6 = (x) => x.toFixed(6);
@@ -128,73 +127,6 @@ ${binding ? `        texCoord2f[] primvars:st = [${st.join(", ")}] (
   return [[`${name}/${name}.usda`, out]];
 }
 
-// ---------------------------------------------------------------- GLB (glTF 2.0)
-function writeGlb(tiles, name, meta, withTex, flipV) {
-  const chunks = [];
-  let offset = 0;
-  const json = {
-    asset: { version: "2.0", generator: "Earth Importer", extras: { origin: [meta.lat, meta.lon] } },
-    scene: 0, scenes: [{ nodes: [] }], nodes: [], meshes: [], accessors: [], bufferViews: [],
-    buffers: [], materials: [], textures: [], images: [],
-    samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 33071, wrapT: 33071 }],
-  };
-  function view(bytes, target) {
-    const pad = (4 - (offset % 4)) % 4;
-    if (pad) { chunks.push(new Uint8Array(pad)); offset += pad; }
-    json.bufferViews.push({ buffer: 0, byteOffset: offset, byteLength: bytes.byteLength, ...(target ? { target } : {}) });
-    chunks.push(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    offset += bytes.byteLength;
-    return json.bufferViews.length - 1;
-  }
-  function accessor(arr, comps, type, componentType, target, minmax) {
-    const a = { bufferView: view(arr, target), componentType, count: arr.length / comps, type };
-    if (minmax) Object.assign(a, minmax);
-    json.accessors.push(a);
-    return json.accessors.length - 1;
-  }
-  for (const t of tiles) {
-    const n = t.pos.length / 3;
-    const pos = Float32Array.from(t.pos);
-    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < pos.length; i += 3)
-      for (let k = 0; k < 3; k++) { min[k] = Math.min(min[k], pos[i + k]); max[k] = Math.max(max[k], pos[i + k]); }
-    const attributes = { POSITION: accessor(pos, 3, "VEC3", 5126, 34962, { min, max }) };
-    const prim = { attributes, indices: accessor(Uint32Array.from(t.faces), 1, "SCALAR", 5125, 34963), mode: 4 };
-    if (withTex && t.uv) {
-      const uv = new Float32Array(2 * n);
-      for (let i = 0; i < n; i++) { uv[2 * i] = t.uv[2 * i]; uv[2 * i + 1] = uvForGltf(t.uv[2 * i + 1], flipV); }
-      attributes.TEXCOORD_0 = accessor(uv, 2, "VEC2", 5126, 34962);
-      const mat = { name: `m_${t.name}`, pbrMetallicRoughness: { metallicFactor: 0, roughnessFactor: 1 } };
-      if (t.texture) {
-        json.images.push({ bufferView: view(t.texture), mimeType: "image/jpeg", name: t.name });
-        json.textures.push({ source: json.images.length - 1, sampler: 0 });
-        mat.pbrMetallicRoughness.baseColorTexture = { index: json.textures.length - 1 };
-      }
-      json.materials.push(mat);
-      prim.material = json.materials.length - 1;
-    }
-    const label = t.label || `tile_${t.name}`;
-    json.meshes.push({ name: label, primitives: [prim] });
-    json.nodes.push({ name: label, mesh: json.meshes.length - 1 });
-    json.scenes[0].nodes.push(json.nodes.length - 1);
-  }
-  for (const k of ["materials", "textures", "images"]) if (!json[k].length) delete json[k];
-  if (!json.textures) delete json.samplers;
-  const binPad = (4 - (offset % 4)) % 4;
-  if (binPad) { chunks.push(new Uint8Array(binPad)); offset += binPad; }
-  json.buffers.push({ byteLength: offset });
-  let jsonBytes = enc.encode(JSON.stringify(json));
-  const jpad = (4 - (jsonBytes.length % 4)) % 4;
-  if (jpad) jsonBytes = concat([jsonBytes, enc.encode(" ".repeat(jpad))]);
-  const total = 12 + 8 + jsonBytes.length + 8 + offset;
-  const head = new DataView(new ArrayBuffer(20));
-  head.setUint32(0, 0x46546c67, true); head.setUint32(4, 2, true); head.setUint32(8, total, true);
-  head.setUint32(12, jsonBytes.length, true); head.setUint32(16, 0x4e4f534a, true);
-  const binHead = new DataView(new ArrayBuffer(8));
-  binHead.setUint32(0, offset, true); binHead.setUint32(4, 0x004e4942, true);
-  return [[`${name}/${name}.glb`, [new Uint8Array(head.buffer), jsonBytes, new Uint8Array(binHead.buffer), ...chunks]]];
-}
-
 // ---------------------------------------------------------------- ZIP (stockage sans compression)
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -258,6 +190,6 @@ function makeZip(files) {
   return new Blob([...out, ...central, new Uint8Array(end.buffer)], { type: "application/zip" });
 }
 
-const EXPORTERS = { obj: writeObj, usd: writeUsda, glb: writeGlb };
+const EXPORTERS = { obj: writeObj, usd: writeUsda };
 
 if (typeof module !== "undefined") module.exports = { EXPORTERS, makeZip, crc32 };

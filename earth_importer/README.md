@@ -44,8 +44,8 @@ géométries OSM est passé à `osm.html`. Rien à installer (ni Python,
 ni Blender). Même carte, mêmes réglages ; le résultat arrive en **`.zip`** dans le dossier
 Téléchargements.
 
-- Formats : **OBJ**, **USD** (`.usda`, matériaux `UsdPreviewSurface`, textures en `clamp`) et
-  **GLB**. Pas d'Alembic (impossible dans un navigateur) : utiliser la version Python pour l'ABC.
+- Formats : **OBJ** et **USD** (`.usda`, matériaux `UsdPreviewSurface`, textures en `clamp`).
+  Pas d'Alembic (impossible dans un navigateur) : utiliser la version Python pour l'ABC.
 - **Fusion** (menu « Fusion ») : *Tuiles séparées*, ou *1 objet + 1 texture* : toutes les tuiles
   en un seul maillage et toutes les textures dans un **atlas** (`textures/fusion.jpg`). Seule la
   partie de chaque texture réellement utilisée par la zone y est rangée, et les UV sont recalculées.
@@ -71,7 +71,7 @@ Téléchargements.
    d'en choisir un autre. On peut aussi cliquer sur la carte ou déplacer le marqueur. La recherche passe
    par Photon (komoot, données OpenStreetMap), avec Nominatim en secours : connexion Internet nécessaire.
 2. **Rayon** : taille de la zone (cercle bleu). Les triangles hors du cercle sont supprimés.
-3. **Contenu** : géométrie + textures, géométrie seule (pas d'UV, pas de matériaux), ou rien (LiDAR seul).
+3. **Contenu** : géométrie + textures, ou rien (LiDAR seul).
 4. **Tester** : télécharge la zone et l'affiche en **3D** (onglet « Aperçu 3D » ; clic gauche =
    tourner, clic droit = déplacer, molette = zoom). Rien n'est écrit sur le disque. Au-delà de
    `preview_max_tiles` tuiles (400), l'aperçu est allégé d'un ou plusieurs niveaux. Le log donne le
@@ -102,13 +102,13 @@ En plus (ou à la place) de la 3D Google, l'outil peut récupérer le **LiDAR HD
 zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniquement**.
 
 - **LiDAR IGN** : *MNS* (surface : sol + bâtiments + arbres), *MNT* (sol nu) ou les deux. Chacun
-  devient un maillage en grille (`<nom>_lidar_mns.obj`, `<nom>_lidar_mnt.obj`, ou ABC / USD / GLB
+  devient un maillage en grille (`<nom>_lidar_mns.obj`, `<nom>_lidar_mnt.obj`, ou ABC / USD
   selon le format), dans **le même repère que la 3D Google** (même origine, mêmes axes) : les deux
   se superposent directement dans le logiciel 3D. Pas de texture.
-- **Pas** : 0,5 m (résolution native), 1, 2 ou 5 m. Une zone de 400 m au pas de 0,5 m ≈ 1,3 M triangles.
+- **Pas** : toujours 0,5 m (résolution native). Une zone de 400 m ≈ 1,3 M triangles.
   **Tester** annonce la taille de la grille et affiche le LiDAR dans l'aperçu 3D (orange : MNS,
   vert : MNT, gris : Google sans texture ; cases en haut à droite pour masquer chaque couche).
-- **Calage → Sur Google** (coché par défaut, quand la 3D Google est demandée aussi) : l'outil compare
+- **Calage sur Google** (automatique, dès que la 3D Google est demandée aussi) : l'outil compare
   le relief du MNS et celui de la 3D Google au centre de la zone (300 m × 300 m au plus) et déplace le
   LiDAR (Est, Nord, hauteur) pour qu'ils se superposent. Il vérifie au passage le sens Nord/Sud des
   grilles IGN et le corrige si besoin. Le log donne le décalage trouvé et la corrélation (de 0 à 1) ;
@@ -134,7 +134,7 @@ Python) ou en haut de `web/src/lidar.js` (version fichier local).
 
 À vérifier au premier essai réel (l'environnement de développement n'avait pas accès à l'IGN) :
 - le **sens Nord/Sud** des grilles : si le relief sort inversé, passer `bil_south_first` à `false` ;
-- le **calage** sur la 3D Google : automatique (case Calage), sinon `z_offset` (en mètres) pour la
+- le **calage** sur la 3D Google : automatique, sinon `z_offset` (en mètres) pour la
   hauteur ;
 - le nom de la couche WFS des dalles (`laz_typename`) si la case Dalles LAZ ne trouve rien.
 
@@ -168,7 +168,7 @@ vérifier avec `python -m pytest tests -q`.
   Décodeur, parcours, exports et interface sont testés sur données synthétiques ; les points suivants
   sont à vérifier au premier essai réel :
   - le sens des textures : aligné sur le décodeur de Google ; en secours, `flip_v` dans `config.yaml`
-    (version Python) ou la case « Inverser V » (version fichier local) ;
+    (version Python) ou `flipV` en haut de `web/src/app.js` (version fichier local) ;
 - Textures **CRN/DXT1** non décodées : l'outil demande du JPG ; si une tuile n'existe qu'en CRN, elle
   est exportée sans texture (avertissement dans le log).
 - Les normales Google ne sont pas reprises (le logiciel 3D les recalcule).

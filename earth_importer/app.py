@@ -68,7 +68,7 @@ class Request(BaseModel):
     out_dir: str = ""
     name: str = ""
     lidar: str = "none"
-    lidar_res: float = 1.0
+    lidar_res: float = 0.5
     laz: bool = False
     align: bool = True
     lidar_tex: int = 4096

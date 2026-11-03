@@ -15,6 +15,7 @@ const LIDAR_CONFIG = {
   validRange: [-500, 5000],
   zOffset: 0,
   maxVertices: 16e6,
+  res: 0.5,              // pas de la grille (m) : resolution native du LiDAR HD
 };
 const ignBase = typeof location !== "undefined" ? new URLSearchParams(location.search).get("ign") : null;  // tests : faux services IGN
 if (ignBase) LIDAR_CONFIG.wms = ignBase + "/wms";
@@ -63,7 +64,7 @@ const LIDAR = {
   checkSize(p) {
     const [h, w] = LIDAR.shape(p, p.lidarRes);
     if (h * w > LIDAR_CONFIG.maxVertices)
-      throw new Error(`Zone trop grande pour un pas LiDAR de ${p.lidarRes} m (${w} x ${h} points) : augmente le pas ou réduis la zone`);
+      throw new Error(`Zone trop grande pour le LiDAR à ${p.lidarRes} m (${w} x ${h} points) : réduis la zone`);
     return [h, w];
   },
 
