@@ -17,7 +17,7 @@ from . import rocktree as rt
 from .fetch import Cancelled, Fetcher, FetchError
 from .geo import LocalFrame
 from . import align
-from .bake import TopViewBaker, planar_uv
+from .bake import TiledTopView, split, tex_name
 from .lidar import Lidar
 
 HERE = Path(__file__).resolve().parent.parent
@@ -39,7 +39,7 @@ class Params:
     lidar_res: float = 0.5     # pas de la grille LiDAR (m) : resolution native
     laz: bool = False          # dalles brutes du nuage de points LiDAR HD
     align: bool = True         # cale le LiDAR sur la 3D Google (decalage Est/Nord/haut)
-    lidar_tex: int = 4096      # texture du LiDAR = vue de dessus de la 3D Google (px), 0 = aucune
+    lidar_tex: bool = True     # texture du LiDAR = vue de dessus de la 3D Google, resolution d'origine
 
     def validate(self):
         if not -90 <= self.lat <= 90 or not -180 <= self.lon <= 180:
@@ -50,8 +50,7 @@ class Params:
             raise ValueError("niveau de detail entre 1 et 22")
         if self.content not in ("geo_tex", "geo", "none") or self.fmt not in ("obj", "abc", "usd"):
             raise ValueError("contenu ou format inconnu")
-        if self.lidar not in ("none", "mns", "mnt", "both") or self.lidar_res not in (0.5, 1, 2, 5) \
-                or self.lidar_tex not in (0, 2048, 4096, 8192):
+        if self.lidar not in ("none", "mns", "mnt", "both") or self.lidar_res not in (0.5, 1, 2, 5):
             raise ValueError("option LiDAR inconnue")
         if self.content == "none" and self.lidar == "none" and not self.laz:
             raise ValueError("rien a telecharger : choisis la 3D Google et/ou le LiDAR")
@@ -229,7 +228,7 @@ class Job:
         candidates = self.collect(root)
         if self.p.lidar != "none" and self.p.lidar_tex:
             if self.with_tex:
-                self.baker = TopViewBaker(self.p.radius, self.p.lidar_tex)
+                self.baker = TiledTopView(self.p.radius)
             else:
                 self.log("WARN", "Texture LiDAR : pas de texture Google (choisir Contenu = Geometrie + textures)")
         excl = self.exclusions(candidates)
@@ -239,6 +238,7 @@ class Job:
         levels = sorted({len(p) for p in todo})
         mpt = min((m.meters_per_texel for m in todo.values() if m.meters_per_texel), default=0)
         self.log("INFO", f"{len(todo)} tuiles a telecharger (niveaux {levels[0]}-{levels[-1]}, ~{mpt:.2f} m/texel au plus fin)")
+        self.tex_mpt = mpt
         if self.estimate_only:
             self.estimated = len(todo)
             self.emit("estimate", {"tiles": len(todo), "levels": levels})
@@ -303,49 +303,60 @@ class Job:
                          f"hauteur {sol['dH']:+.1f} m (correlation {sol['score']:.2f})")
 
     def bake_texture(self):
-        """JPEG de la vue de dessus Google pour texturer le LiDAR, ou None."""
+        """Vue de dessus Google en dalles (plan avec les JPEG) pour texturer le LiDAR, ou None."""
         if self.baker is None:
             return None
-        self.progress("Texture LiDAR : vue de dessus Google", 0, 0)
         t0 = time.time()
-        jpeg = self.baker.jpeg()
-        if jpeg is None:
+        plan = self.baker.plan(self.tex_mpt, preview=self.estimate_only)
+        ok = self.baker.bake(plan, lambda d, t: self.progress("Texture LiDAR : vue de dessus Google", d, t))
+        if not ok:
             self.log("WARN", "Texture LiDAR : aucune texture Google dans la zone")
             return None
-        size = self.baker.size
-        self.log("INFO", f"Texture LiDAR : vue de dessus Google {size} x {size} px "
-                         f"(~{100 * 2 * self.p.radius / size:.0f} cm/px), {len(jpeg) / 1e6:.1f} Mo, "
+        n, size = plan["n"], plan["size"]
+        tiling = f"{n} x {n} dalles de {size} px" if n > 1 else f"{size} x {size} px"
+        cm = 100 * (plan["cell"] + 2 * plan["pad"]) / size
+        mo = sum(len(j) for row in plan["images"] for j in row) / 1e6
+        self.log("INFO", f"Texture LiDAR : vue de dessus Google, {tiling} (~{cm:.1f} cm/px), {mo:.1f} Mo, "
                          f"{time.time() - t0:.0f} s")
-        return jpeg
+        if self.estimate_only:
+            self.log("INFO", "Apercu : texture LiDAR allegee ; le telechargement prendra la resolution d'origine de Google")
+        elif plan["capped"]:
+            self.log("WARN", f"Zone tres grande : texture LiDAR limitee a {n} x {n} dalles (resolution reduite)")
+        return plan
 
     def run_lidar(self):
         """LiDAR HD IGN : MNS/MNT mailles dans le meme repere que Google, et/ou dalles LAZ brutes."""
         lid = Lidar(self.cfg, self.p, self.frame, self.cache_dir, self.cancel, self.log, self.progress)
         if self.p.align and self.ref_pts and lid.products():
             self.align_lidar(lid)
-        texture = self.bake_texture() if lid.products() else None
+        plan = self.bake_texture() if lid.products() else None
         if self.estimate_only:
             lid.estimate()
             if lid.products():
                 lid.check_size()
             for prod in lid.products():
                 res = lid.mesh(prod)
-                if res:
-                    v, faces = res
+                if not res:
+                    continue
+                v, faces = res
+                if not plan:
                     self.preview_tiles.append({"name": f"lidar_{prod}", "faces": faces,
-                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1),
-                                               "uv": planar_uv(v, lid.half) if texture else None,
-                                               "texture": texture})
+                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1)})
+                    continue
+                for r, c, pv, pf, uv in split(v, faces, plan):
+                    self.preview_tiles.append({"name": f"lidar_{prod}_r{r}c{c}", "faces": pf,
+                                               "pos": np.stack([pv[:, 0], pv[:, 2], -pv[:, 1]], axis=1),
+                                               "uv": uv, "texture": plan["images"][r][c]})
             return []
         outputs = []
         self.out.mkdir(parents=True, exist_ok=True)
         if lid.products():
             lid.check_size()
         for prod in lid.products():
-            obj_path = lid.write_obj(self.out, self.p.name, prod, texture)
+            obj_path = lid.write_obj(self.out, self.p.name, prod, plan)
             if obj_path is None:
                 continue
-            outputs.append(self.blender_export(obj_path, bool(texture)) if self.p.fmt != "obj" else obj_path)
+            outputs.append(self.blender_export(obj_path, bool(plan)) if self.p.fmt != "obj" else obj_path)
         if self.p.laz:
             laz = lid.download_laz(self.out)
             if laz:

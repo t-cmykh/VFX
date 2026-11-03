@@ -10,7 +10,10 @@ const LAYERS = [
   { key: "lidar_mns", label: "LiDAR MNS", color: 0xd9925b },
   { key: "lidar_mnt", label: "LiDAR MNT", color: 0x6fae6a },
 ];
-const layerOf = (t) => (t.name === "lidar_mns" || t.name === "lidar_mnt" ? t.name : "google");
+const layerOf = (t) => {
+  const k = t.product || t.name || "";
+  return k.startsWith("lidar_mns") ? "lidar_mns" : k.startsWith("lidar_mnt") ? "lidar_mnt" : "google";
+};
 
 const Preview = (() => {
   let renderer = null, scene = null, camera = null, controls = null, container = null, root = null;

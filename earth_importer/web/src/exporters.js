@@ -27,7 +27,7 @@ function writeObj(tiles, name, meta, withTex, flipV) {
     if (hasUv) {
       for (let i = 0; i < n; i++) lines.push(`vt ${fmt6(t.uv[2 * i])} ${fmt6(uvForObj(t.uv[2 * i + 1], flipV))}\n`);
       mtl.push(`newmtl m_${t.name}\nKd 1 1 1\nKs 0 0 0\nd 1\nillum 1\n`);
-      if (t.texture) mtl.push(`map_Kd textures/${t.name}.jpg\n`);
+      if (t.texture) mtl.push(`map_Kd textures/${t.texName || t.name}.jpg\n`);
       mtl.push("\n");
       lines.push(`usemtl m_${t.name}\n`);
       for (let i = 0; i < t.faces.length; i += 3) {
@@ -84,7 +84,7 @@ ${t.texture ? `
             def Shader "Tex"
             {
                 uniform token info:id = "UsdUVTexture"
-                asset inputs:file = @./textures/${t.name}.jpg@
+                asset inputs:file = @./textures/${t.texName || t.name}.jpg@
                 token inputs:sourceColorSpace = "sRGB"
                 float2 inputs:st.connect = <${m}/St.outputs:result>
                 token inputs:wrapS = "clamp"
