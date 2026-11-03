@@ -38,7 +38,9 @@ Si rien ne s'ouvre : une boîte d'erreur s'affiche, le détail est dans `earth_i
 
 ## Version fichier local (sans installation)
 
-**`EarthImporter.html`** : double-clic, ça s'ouvre dans le navigateur. Rien à installer (ni Python,
+**`EarthImporter.html`** : double-clic, ça s'ouvre dans le navigateur. C'est aussi la page d'accueil du site
+GitHub Pages du dépôt (`index.html` à la racine, copie générée par `web/build.py`) ; l'Extracteur
+géométries OSM est passé à `osm.html`. Rien à installer (ni Python,
 ni Blender). Même carte, mêmes réglages ; le résultat arrive en **`.zip`** dans le dossier
 Téléchargements.
 
