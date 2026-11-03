@@ -1,4 +1,5 @@
 """Assemble web/src/ en un seul fichier autonome : earth_importer/EarthImporter.html
+(et sa copie index.html a la racine du depot : page d'accueil du site GitHub Pages)
 
     python web/build.py
 
@@ -10,6 +11,7 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent / "src"
 OUT = SRC.parent.parent / "EarthImporter.html"
+SITE_INDEX = SRC.parent.parent.parent / "index.html"
 
 
 def inline(match):
@@ -25,6 +27,8 @@ def build():
     html = (SRC / "index.html").read_text(encoding="utf-8")
     html = re.sub(r"<!-- @inline-(css|js) (\S+) -->", inline, html)
     OUT.write_text(html, encoding="utf-8")
+    if SITE_INDEX is not None:
+        SITE_INDEX.write_text(html, encoding="utf-8")
     return OUT
 
 

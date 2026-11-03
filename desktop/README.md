@@ -1,6 +1,6 @@
 # Extracteur géométries OSM/IGN — version desktop
 
-Même outil que la version navigateur (`../index.html`), mais lancé depuis
+Même outil que la version navigateur (`../osm.html`), mais lancé depuis
 ton ordinateur au lieu de GitHub Pages. Raison d'être : un backend Python
 local fait les requêtes réseau (Overpass, IGN, Lyon) à ta place — CORS est
 une restriction propre au navigateur, un script qui fait sa propre requête

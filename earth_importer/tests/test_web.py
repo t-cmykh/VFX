@@ -18,8 +18,12 @@ from tests import fake_rocktree as fk  # noqa: E402
 
 def test_built_file_is_up_to_date(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "OUT", tmp_path / "out.html")
-    assert build.build().read_text(encoding="utf-8") == (ROOT / "EarthImporter.html").read_text(encoding="utf-8"), \
+    monkeypatch.setattr(build, "SITE_INDEX", None)
+    built = build.build().read_text(encoding="utf-8")
+    assert built == (ROOT / "EarthImporter.html").read_text(encoding="utf-8"), \
         "EarthImporter.html n'est pas a jour : lancer python web/build.py"
+    assert built == (ROOT.parent / "index.html").read_text(encoding="utf-8"), \
+        "index.html (accueil du site) n'est pas a jour : lancer python web/build.py"
 
 
 @pytest.fixture

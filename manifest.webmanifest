@@ -2,7 +2,7 @@
   "name": "Extracteur géométries OSM",
   "short_name": "GeoVFX",
   "description": "Sélectionne une zone, récupère bâtiments/routes/relief OSM+IGN et exporte en OBJ/GLB pour layout VFX.",
-  "start_url": "./",
+  "start_url": "./osm.html",
   "display": "standalone",
   "background_color": "#0e1013",
   "theme_color": "#0e1013",
