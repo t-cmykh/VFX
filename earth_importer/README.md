@@ -53,11 +53,10 @@ Téléchargements.
 - Tout se passe en mémoire : pour de très grandes zones, préférer la version Python.
 - Fermer ou recharger la page vide le cache (relancer après une annulation ne retélécharge rien
   tant que la page reste ouverte).
+- Mêmes nouveautés que la version Python : recherche de lieu par nom, définition maximale,
+  **Tester** = aperçu 3D (rien n'est téléchargé dans le dossier Téléchargements), fond Google Satellite.
 - Zone **carrée** : bouton **▢ Dessiner** puis cliquer-glisser d'un coin à l'autre (Échap pour
   annuler), ou champ « Côté (m) » + coordonnées du centre. Le marqueur déplace le carré.
-- Fond de carte au choix (en haut à droite, mémorisé) : Google Satellite / Plan, Esri, CARTO.
-  Les serveurs OpenStreetMap refusent les pages ouvertes en `file://`, et certains fournisseurs
-  demandent une clé : si un fond affiche une erreur, en choisir un autre.
 - Si le log affiche « requête bloquée par le navigateur (CORS) », Google refuse les requêtes
   venant d'une page locale : utiliser la version Python, qui n'a pas cette limite.
 - Le fichier est généré depuis `web/src/` par `python web/build.py` (ne pas le modifier à la main).
@@ -65,13 +64,21 @@ Téléchargements.
 
 ## Utilisation
 
-1. **Coordonnées** : taper `48.8584, 2.2945` puis Entrée, ou cliquer sur la carte / déplacer le marqueur.
+1. **Lieu ou coordonnées** : taper un nom (`Tour Eiffel`, `Mont Saint-Michel`, une adresse…) ou
+   `48.8584, 2.2945`, puis Entrée. Si plusieurs lieux correspondent, la liste sous le champ permet
+   d'en choisir un autre. On peut aussi cliquer sur la carte ou déplacer le marqueur. La recherche passe
+   par Photon (komoot, données OpenStreetMap), avec Nominatim en secours : connexion Internet nécessaire.
 2. **Rayon** : taille de la zone (cercle bleu). Les triangles hors du cercle sont supprimés.
-3. **Détail** : niveau de l'octree. Chaque niveau en plus ≈ ×4 tuiles. Les résolutions affichées
-   (m/px) sont indicatives ; la vraie valeur s'affiche dans le log après **Estimer**.
-4. **Contenu** : géométrie + textures, ou géométrie seule (pas d'UV, pas de matériaux).
-5. **Estimer** (optionnel) : lit seulement les métadonnées et annonce le nombre de tuiles.
-6. **Télécharger** + format (OBJ / ABC / USD à côté du bouton).
+3. **Contenu** : géométrie + textures, géométrie seule (pas d'UV, pas de matériaux), ou rien (LiDAR seul).
+4. **Tester** : télécharge la zone et l'affiche en **3D** (onglet « Aperçu 3D » ; clic gauche =
+   tourner, clic droit = déplacer, molette = zoom). Rien n'est écrit sur le disque. Au-delà de
+   `preview_max_tiles` tuiles (400), l'aperçu est allégé d'un ou plusieurs niveaux. Le log donne le
+   nombre de tuiles du vrai téléchargement.
+5. **Télécharger** + format (OBJ / ABC / USD à côté du bouton). Ce que Tester a déjà reçu est
+   réutilisé (cache).
+
+La géométrie est toujours prise à la **meilleure définition disponible** : le parcours de l'octree
+descend tant que Google a des données plus fines. Le fond de carte est Google Satellite.
 
 Sortie dans `<dossier>/<nom>/` :
 
@@ -87,12 +94,40 @@ dans les exports ABC/USD, Z-up (X = Est, Y = Nord). Une tuile = un objet.
 Les réponses brutes sont gardées dans `<dossier>/.earth_cache/` : relancer après une annulation ne
 retélécharge pas ce qui l'a déjà été. Supprimer ce dossier pour repartir de zéro.
 
+## LiDAR HD de l'IGN (France)
+
+En plus (ou à la place) de la 3D Google, l'outil peut récupérer le **LiDAR HD de l'IGN** sur la même
+zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniquement**.
+
+- **LiDAR IGN** : *MNS* (surface : sol + bâtiments + arbres), *MNT* (sol nu) ou les deux. Chacun
+  devient un maillage en grille (`<nom>_lidar_mns.obj`, `<nom>_lidar_mnt.obj`, ou ABC / USD / GLB
+  selon le format), dans **le même repère que la 3D Google** (même origine, mêmes axes) : les deux
+  se superposent directement dans le logiciel 3D. Pas de texture.
+- **Pas** : 0,5 m (résolution native), 1, 2 ou 5 m. Une zone de 400 m au pas de 0,5 m ≈ 1,3 M triangles.
+  **Tester** annonce la taille de la grille et affiche le LiDAR dans l'aperçu 3D (gris : MNS, vert : MNT).
+- Si le MNT LiDAR HD n'existe pas encore sur la zone, repli automatique sur le RGE ALTI (1 m).
+- **Contenu → Rien (LiDAR seul)** pour ne pas interroger Google.
+- **Dalles LAZ** (version Python seulement) : télécharge les dalles brutes du nuage de points
+  classifié (1 km × 1 km, **0,5 à 2 Go chacune**) dans `<nom>/lidar_laz/`. Elles restent en
+  Lambert-93 / altitudes IGN69 ; `origine_repere_local.txt` donne la translation et la rotation pour
+  les recaler sur les maillages. Les dalles déjà présentes ne sont pas retéléchargées.
+
+Sources : WMS raster de la Géoplateforme (`data.geopf.fr/wms-r`, grilles float32 en Lambert-93) et
+index WFS des dalles. URLs et noms de couches dans la section `lidar` de `config.yaml` (version
+Python) ou en haut de `web/src/lidar.js` (version fichier local).
+
+À vérifier au premier essai réel (l'environnement de développement n'avait pas accès à l'IGN) :
+- le **sens Nord/Sud** des grilles : si le relief sort inversé, passer `bil_south_first` à `false` ;
+- le **calage vertical** sur la 3D Google : le LiDAR est en altitude IGN69 ; s'il flotte ou s'enfonce
+  par rapport au maillage Google, régler `z_offset` (en mètres) ;
+- le nom de la couche WFS des dalles (`laz_typename`) si la case Dalles LAZ ne trouve rien.
+
 ## Ce que fait l'outil
 
 1. **Test de santé** : lit `PlanetoidMetadata` et le bloc racine. Si la réponse est illisible, le log
    dit « Protocole Google modifié » et rien n'est écrit.
 2. **Parcours de l'octree** : descend les `BulkMetadata` (par paquets de 4 niveaux), garde les nœuds
-   dont la boîte englobante touche le cercle, jusqu'au niveau choisi.
+   dont la boîte englobante touche le cercle, jusqu'au niveau le plus fin disponible.
 3. **Téléchargement** des `NodeData` en parallèle (limite de débit, nouvelles tentatives sur 429/5xx).
 4. **Décodage** : sommets en delta, UV, triangle strips, masque d'octants. Un parent n'exporte que les
    octants qui n'ont pas d'enfant plus détaillé (pas de couches superposées). Eau et jupes ignorées.
@@ -118,17 +153,18 @@ vérifier avec `python -m pytest tests -q`.
   sont à vérifier au premier essai réel :
   - le sens des textures : aligné sur le décodeur de Google ; en secours, `flip_v` dans `config.yaml`
     (version Python) ou la case « Inverser V » (version fichier local) ;
-  - la correspondance niveau ↔ résolution affichée dans le menu Détail.
 - Textures **CRN/DXT1** non décodées : l'outil demande du JPG ; si une tuile n'existe qu'en CRN, elle
   est exportée sans texture (avertissement dans le log).
 - Les normales Google ne sont pas reprises (le logiciel 3D les recalcule).
 - Les tuiles voisines ne sont pas soudées entre elles (`Merge by Distance` global si besoin).
-- Carte : tuiles OpenStreetMap, connexion Internet nécessaire pour le fond de carte. Leaflet est
-  embarqué (`ui/vendor/leaflet`, BSD-2).
+- Carte : tuiles Google Satellite, connexion Internet nécessaire pour le fond de carte. Leaflet
+  (`ui/vendor/leaflet`, BSD-2) et three.js r147 pour l'aperçu 3D (`ui/vendor/three`, MIT) sont embarqués.
+- Définition maximale sur une grande zone = beaucoup de tuiles : regarder le nombre annoncé par
+  **Tester** avant de lancer le téléchargement.
 
 ## Tests
 
 ```bash
-pip install pytest
+pip install pytest playwright   # playwright : tests de la version fichier local (optionnel)
 python -m pytest tests -q
 ```

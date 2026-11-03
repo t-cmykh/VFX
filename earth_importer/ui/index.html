@@ -9,26 +9,50 @@
 </head>
 <body>
 <header class="bar">
-  <label class="grow">Coordonnées
-    <input id="coords" placeholder="48.8584, 2.2945" autocomplete="off">
+  <label class="grow place">Lieu ou coordonnées
+    <input id="coords" placeholder="Tour Eiffel, Paris  —  ou  48.8584, 2.2945" autocomplete="off">
+    <ul id="places" hidden></ul>
   </label>
   <button id="go">Aller</button>
   <label>Rayon (m)
     <input id="radius" type="number" min="1" max="5000" step="10" value="200">
   </label>
-  <label>Détail
-    <select id="level"></select>
-  </label>
 </header>
 
-<main id="map"></main>
+<main id="stage">
+  <div id="map"></div>
+  <div id="viewer" hidden></div>
+  <div class="tabs">
+    <button id="tab-map" class="active">Carte</button><button id="tab-3d" disabled title="Cliquer sur Tester pour voir la géométrie avant de la télécharger">Aperçu 3D</button>
+  </div>
+</main>
 
 <section class="bar controls">
   <label>Contenu
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
+      <option value="none">Rien (LiDAR seul)</option>
     </select>
+  </label>
+  <label title="LiDAR HD de l'IGN (France) : maillage dans le même repère que la 3D Google">LiDAR IGN
+    <select id="lidar">
+      <option value="none">Aucun</option>
+      <option value="mns">MNS (surface)</option>
+      <option value="mnt">MNT (sol nu)</option>
+      <option value="both">MNS + MNT</option>
+    </select>
+  </label>
+  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
+    <select id="lidarres">
+      <option value="0.5">0,5 m</option>
+      <option value="1" selected>1 m</option>
+      <option value="2">2 m</option>
+      <option value="5">5 m</option>
+    </select>
+  </label>
+  <label title="Dalles brutes du nuage de points LiDAR HD (1 km², 0,5 à 2 Go chacune, Lambert-93)">Nuage
+    <span class="check"><input id="laz" type="checkbox"> Dalles LAZ</span>
   </label>
   <label class="grow">Dossier de sortie
     <span class="row"><input id="outdir"><button id="pick" hidden title="Choisir un dossier">📁</button></span>
@@ -36,7 +60,7 @@
   <label>Nom
     <input id="name" placeholder="auto">
   </label>
-  <button id="estimate" class="ghost">Estimer</button>
+  <button id="estimate" class="ghost" title="Télécharge un aperçu et l'affiche en 3D (le téléchargement final réutilise ce qui a déjà été reçu)">Tester</button>
   <button id="cancel" class="ghost" disabled>Annuler</button>
   <span class="split">
     <button id="download" class="primary">Télécharger</button>
@@ -56,6 +80,10 @@
 <section id="log" aria-live="polite"></section>
 
 <script src="/ui/vendor/leaflet/leaflet.js"></script>
+<script src="/ui/vendor/three/three.min.js"></script>
+<script src="/ui/vendor/three/OrbitControls.js"></script>
+<script src="/ui/geocode.js"></script>
+<script src="/ui/preview.js"></script>
 <script src="/ui/app.js"></script>
 </body>
 </html>

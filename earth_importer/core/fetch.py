@@ -7,6 +7,13 @@ from pathlib import Path
 import requests
 
 
+def short(resource):
+    """Libelle court pour le log : nom de ressource Google, ou hote + chemin d'une URL complete."""
+    if resource.startswith(("http://", "https://")):
+        return resource.split("://", 1)[1].split("?", 1)[0]
+    return resource.split("/")[0]
+
+
 class Cancelled(Exception):
     pass
 
@@ -48,7 +55,7 @@ class Fetcher:
             p = self._cache_path(resource)
             if p.exists():
                 return p.read_bytes()
-        url = self.base + resource
+        url = resource if resource.startswith(("http://", "https://")) else self.base + resource
         backoff = 1.0
         for attempt in range(1, self.max_retries + 1):
             if self.cancel.is_set():
@@ -70,7 +77,7 @@ class Fetcher:
                 err = f"HTTP {r.status_code}"
             if attempt == self.max_retries:
                 raise FetchError(f"{err} sur {resource} apres {attempt} essais")
-            self.log("WARN", f"{err} sur {resource.split('/')[0]}, nouvel essai dans {backoff:.0f} s")
+            self.log("WARN", f"{err} sur {short(resource)}, nouvel essai dans {backoff:.0f} s")
             if self.cancel.wait(backoff):
                 raise Cancelled()
             backoff = min(backoff * 2, 16)

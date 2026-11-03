@@ -115,7 +115,25 @@ def test_estimate_only(server, tmp_path):
     job.run()
     est = [d for k, d in events if k == "estimate"]
     assert est and est[0]["tiles"] == 2
-    assert not any(r.startswith("NodeData") for r in server.requests)
+    # Tester = apercu 3D : les tuiles sont telechargees (puis reutilisees par le cache), rien n'est ecrit
+    assert events[-1] == ("state", {"state": "finished", "preview": True})
+    assert not (tmp_path / "test").exists()
+    prev = [d for k, d in events if k == "preview"][0]
+    assert prev["triangles"] == 44 and prev["bytes"] == len(job.preview)
+    import json
+    n = int.from_bytes(job.preview[:4], "little")
+    meta = json.loads(job.preview[4:4 + n])
+    assert sum(t["nf"] for t in meta["tiles"]) == 44 and all(t["uv"] and t["tex"] for t in meta["tiles"])
+    size = 4 + n + sum(t["nv"] * 12 + t["nf"] * 12 + t["nv"] * 8 + t["tex"] + (-t["tex"] % 4) for t in meta["tiles"])
+    assert size == len(job.preview)
+
+
+def test_preview_subset_drops_finest_levels():
+    cands = {k: None for k in ["3", "30", "31", "300", "301", "302", "310"]}
+    excl = Job.exclusions(cands)
+    todo = {k: m for k, m in cands.items() if len(excl[k]) < 8}
+    sub, _, level = Job.preview_subset(cands, todo, excl, 3)
+    assert level == 2 and set(sub) == {"3", "30", "31"}
 
 
 def test_protocol_change_detected(tmp_path):

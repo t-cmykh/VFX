@@ -29,7 +29,8 @@ def page():
         try:
             browser = p.chromium.launch()
         except Exception:
-            exe = next(Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome"), None)
+            exe = next((x for pat in ("chromium-*/chrome-linux*/chrome", "chromium")
+                        for x in Path("/opt/pw-browsers").glob(pat) if x.is_file()), None)
             if exe is None:
                 pytest.skip("Chromium introuvable")
             browser = p.chromium.launch(executable_path=str(exe))
@@ -46,7 +47,6 @@ def test_web_export(page, tmp_path, fmt, ext):
     srv = fk.FakeServer()
     try:
         page.goto((ROOT / "EarthImporter.html").as_uri() + "?base=" + srv.url)
-        page.evaluate("document.getElementById('level').add(new Option('6', '6', true, true))")
         page.select_option("#fmt", fmt)
         page.fill("#name", "t")
         with page.expect_download(timeout=30000) as dl:
@@ -88,8 +88,8 @@ def test_web_protocol_error(page):
 
 def test_controls_populated(page):
     page.goto((ROOT / "EarthImporter.html").as_uri())
-    levels = page.eval_on_selector_all("#level option", "els => els.map(e => e.value)")
-    assert levels == [str(n) for n in range(15, 22)] and page.input_value("#level") == "18"
+    assert page.locator("#level").count() == 0          # toujours la meilleure definition
+    assert page.locator(".leaflet-control-layers").count() == 0  # un seul fond de carte
     assert page.input_value("#side") == "400" and page.input_value("#coords")
 
 
@@ -193,7 +193,6 @@ def test_web_merged_export(page, tmp_path, fmt, ext):
     srv = fk.FakeServer()
     try:
         page.goto((ROOT / "EarthImporter.html").as_uri() + "?base=" + srv.url)
-        page.evaluate("document.getElementById('level').add(new Option('6', '6', true, true))")
         page.select_option("#fmt", fmt)
         page.select_option("#merge", "1")
         page.select_option("#atlas", "1024")
@@ -222,3 +221,87 @@ def test_web_frame_matches_reference_camera(page):
     page.goto((ROOT / "EarthImporter.html").as_uri())
     enu = page.evaluate("""() => Array.from(GEO.frame(40.7005, -74.0186).toEnu([1329866.230289, -4643494.267515, 4154677.131562]))""")
     assert abs(enu[0]) < 30 and abs(enu[1]) < 30 and abs(enu[2] - 169) < 5
+
+
+def test_web_lidar(page, tmp_path):
+    """LiDAR seul (faux services IGN) : meme placement et meme orientation que la version Python."""
+    import numpy as np
+    from tests import fake_ign as fi
+    ign = fi.FakeIgn()
+    try:
+        page.goto((ROOT / "EarthImporter.html").as_uri() + "?ign=" + ign.url)
+        page.select_option("#content", "none")
+        page.select_option("#lidar", "both")
+        page.select_option("#lidarres", "2")
+        page.fill("#side", "200")
+        page.press("#side", "Enter")
+        page.fill("#name", "t")
+        with page.expect_download(timeout=30000) as dl:
+            page.click("#download")
+        path = tmp_path / "t.zip"
+        dl.value.save_as(path)
+    finally:
+        ign.close()
+    z = zipfile.ZipFile(path)
+    assert set(z.namelist()) == {"t/t_lidar_mns.obj", "t/t_lidar_mnt.obj"}
+    lines = z.read("t/t_lidar_mns.obj").decode().splitlines()
+    v = np.array([[float(x) for x in l.split()[1:]] for l in lines if l.startswith("v ")])
+    north = -v[:, 2]
+    assert np.abs(v[:, [0, 2]]).max() < 105  # carre de 200 m
+    ground = np.abs(v[:, 0] + 60) < 40
+    assert abs(np.polyfit(north[ground], v[ground, 1], 1)[0] - 0.1) < 0.01
+    roof = (np.abs(v[:, 0] - 60) < 15) & (np.abs(north) < 15)
+    assert (v[roof, 1] - (100 + 0.1 * north[roof]) > 19).all()
+
+
+def test_preview_3d(page):
+    """Tester : la geometrie s'affiche en 3D, sans telechargement de fichier."""
+    srv = fk.FakeServer()
+    try:
+        page.set_viewport_size({"width": 1200, "height": 800})
+        page.goto((ROOT / "EarthImporter.html").as_uri() + "?base=" + srv.url)
+        downloads = []
+        page.on("download", lambda d: downloads.append(d))
+        page.click("#estimate")
+        page.wait_for_function("document.body.dataset.state !== 'running'", timeout=30000)
+        assert page.evaluate("document.body.dataset.state") == "estimate"
+        assert page.is_visible("#viewer canvas") and not page.is_visible("#map")
+        assert "Aperçu : 44 triangles" in page.inner_text("#log")
+        # l'image n'est pas vide : des pixels differents du fond
+        n = page.evaluate("""() => {
+            const c = document.querySelector('#viewer canvas'), gl = c.getContext('webgl2') || c.getContext('webgl');
+            const px = new Uint8Array(c.width * c.height * 4);
+            gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            let k = 0; for (let i = 0; i < px.length; i += 4) if (Math.abs(px[i] - 0x1b) > 8) k++;
+            return k; }""")
+        assert n > 1000, n
+        page.click("#tab-map")
+        assert page.is_visible("#map") and not page.is_visible("#viewer")
+        assert not downloads
+    finally:
+        srv.close()
+
+
+def test_place_search(page):
+    """Nom de lieu -> recherche (Photon simule), la zone se centre sur le premier resultat."""
+    import json
+    photon = {"features": [
+        {"geometry": {"coordinates": [2.3376, 48.8606]}, "properties": {"name": "Musée du Louvre", "city": "Paris", "country": "France"}},
+        {"geometry": {"coordinates": [0.1, 45.0]}, "properties": {"name": "Louvre", "country": "France"}},
+    ]}
+    page.route("https://photon.komoot.io/**", lambda r: r.fulfill(
+        status=200, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"}, body=json.dumps(photon)))
+    page.goto((ROOT / "EarthImporter.html").as_uri())
+    page.fill("#coords", "louvre")
+    page.press("#coords", "Enter")
+    page.wait_for_selector("#places li")
+    center = page.evaluate("[marker.getLatLng().lat, marker.getLatLng().lng]")
+    assert abs(center[0] - 48.8606) < 1e-6 and abs(center[1] - 2.3376) < 1e-6
+    assert page.locator("#places li").count() == 2
+    page.click("#places li:nth-child(2)")
+    center = page.evaluate("[marker.getLatLng().lat, marker.getLatLng().lng]")
+    assert abs(center[0] - 45.0) < 1e-6 and page.is_hidden("#places")
+    # des coordonnees restent acceptees telles quelles
+    page.fill("#coords", "48.1, 2.2")
+    page.press("#coords", "Enter")
+    assert page.evaluate("marker.getLatLng().lat") == 48.1

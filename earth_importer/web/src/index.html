@@ -10,26 +10,47 @@
 </head>
 <body>
 <header class="bar">
-  <label class="grow">Coordonnées
-    <input id="coords" placeholder="48.8584, 2.2945" autocomplete="off">
+  <label class="grow place">Lieu ou coordonnées
+    <input id="coords" placeholder="Tour Eiffel, Paris  —  ou  48.8584, 2.2945" autocomplete="off">
+    <ul id="places" hidden></ul>
   </label>
   <button id="go">Aller</button>
   <label>Côté (m)
     <input id="side" type="number" min="2" max="10000" step="10" value="400">
   </label>
   <button id="draw" title="Cliquer-glisser sur la carte pour dessiner un carré (Échap pour annuler)">▢ Dessiner</button>
-  <label>Détail
-    <select id="level"></select>
-  </label>
 </header>
 
-<main id="map"></main>
+<main id="stage">
+  <div id="map"></div>
+  <div id="viewer" hidden></div>
+  <div class="tabs">
+    <button id="tab-map" class="active">Carte</button><button id="tab-3d" disabled title="Cliquer sur Tester pour voir la géométrie avant de la télécharger">Aperçu 3D</button>
+  </div>
+</main>
 
 <section class="bar controls">
   <label>Contenu
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
+      <option value="none">Rien (LiDAR seul)</option>
+    </select>
+  </label>
+  <label title="LiDAR HD de l'IGN (France) : maillage dans le même repère que la 3D Google">LiDAR IGN
+    <select id="lidar">
+      <option value="none">Aucun</option>
+      <option value="mns">MNS (surface)</option>
+      <option value="mnt">MNT (sol nu)</option>
+      <option value="both">MNS + MNT</option>
+    </select>
+  </label>
+  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
+    <select id="lidarres">
+      <option value="0.5">0,5 m</option>
+      <option value="1" selected>1 m</option>
+      <option value="2">2 m</option>
+      <option value="5">5 m</option>
     </select>
   </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
@@ -54,7 +75,7 @@
   <label class="grow">Nom
     <input id="name" placeholder="auto">
   </label>
-  <button id="estimate" class="ghost">Estimer</button>
+  <button id="estimate" class="ghost" title="Télécharge un aperçu et l'affiche en 3D (le téléchargement final réutilise ce qui a déjà été reçu)">Tester</button>
   <button id="cancel" class="ghost" disabled>Annuler</button>
   <span class="split">
     <button id="download" class="primary">Télécharger</button>
@@ -74,7 +95,12 @@
 <section id="log" aria-live="polite"></section>
 
 <!-- @inline-js ../../ui/vendor/leaflet/leaflet.js -->
+<!-- @inline-js ../../ui/vendor/three/three.min.js -->
+<!-- @inline-js ../../ui/vendor/three/OrbitControls.js -->
+<!-- @inline-js ../../ui/geocode.js -->
+<!-- @inline-js ../../ui/preview.js -->
 <!-- @inline-js rocktree.js -->
+<!-- @inline-js lidar.js -->
 <!-- @inline-js exporters.js -->
 <!-- @inline-js merge.js -->
 <!-- @inline-js app.js -->
