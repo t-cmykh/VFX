@@ -312,30 +312,51 @@ def test_place_search(page):
     assert page.evaluate("marker.getLatLng().lat") == 48.1
 
 
-@pytest.mark.parametrize("flip_v", [True, False])
-def test_lidar_texture_orientation(page, flip_v):
-    """Texture LiDAR : une tuile Google rouge seulement au Nord-Est -> le sommet LiDAR Nord-Est lit du rouge,
-    le sommet Sud-Ouest lit le fond gris (vue de dessus, UV de projection verticale, conventions des exporteurs)."""
+@pytest.mark.parametrize("flip_v,tile_max", [(True, 4096), (False, 4096), (True, 256), (False, 256)])
+def test_lidar_texture_orientation(page, flip_v, tile_max):
+    """Texture LiDAR : tuile Google rouge au Nord-Est, verte au Nord-Ouest. Les morceaux LiDAR lisent la bonne
+    couleur dans leur dalle (vue de dessus, decoupage en dalles quand tile_max est petit, conventions des exporteurs)."""
     page.goto((ROOT / "EarthImporter.html").as_uri())
-    res = page.evaluate("""async (flipV) => {
-        const c = document.createElement('canvas'); c.width = c.height = 16;
-        const x = c.getContext('2d'); x.fillStyle = '#ff0000'; x.fillRect(0, 0, 16, 16);
-        const jpeg = new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95))).arrayBuffer());
-        // quad Google : Est 10..90, Nord 10..90, a 20 m de haut (Y en haut, -Z = Nord), UV rocktree
-        const pos = [10, 20, -10, 90, 20, -10, 90, 20, -90, 10, 20, -90];
-        const uv = [0, 0, 1, 0, 1, 1, 0, 1];
-        const google = { name: 'g', pos: Float64Array.from(pos), faces: Uint32Array.from([0, 1, 2, 0, 2, 3]), uv: Float64Array.from(uv), texture: jpeg };
-        const out = await BAKE.topView([google], 100, 512, flipV, { progress() {} });
-        // sommets LiDAR : Nord-Est (50, 50) et Sud-Ouest (-50, -50)
-        const lid = { pos: Float64Array.from([50, 0, -50, -50, 0, 50]) };
-        const uvL = BAKE.planarUv(lid, 100, flipV);
-        // lecture comme un logiciel 3D : V OpenGL (bas = 0) apres uvForObj
-        const img = new Image(); img.src = URL.createObjectURL(new Blob([out.jpeg], { type: 'image/jpeg' })); await img.decode();
-        const cv = document.createElement('canvas'); cv.width = cv.height = out.size;
-        const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
-        const read = (k) => { const u = uvL[2 * k], v = uvForObj(uvL[2 * k + 1], flipV);
-            return Array.from(g.getImageData(Math.floor(u * out.size), Math.floor((1 - v) * out.size), 1, 1).data.slice(0, 3)); };
-        return { ne: read(0), sw: read(1) };
-    }""", flip_v)
-    assert res["ne"][0] > 200 and res["ne"][1] < 60, res
+    res = page.evaluate("""async ([flipV, tileMax]) => {
+        BAKE.tileMax = tileMax;
+        const jpegOf = async (color) => { const c = document.createElement('canvas'); c.width = c.height = 16;
+            const x = c.getContext('2d'); x.fillStyle = color; x.fillRect(0, 0, 16, 16);
+            return new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95))).arrayBuffer()); };
+        const quad = (e0, e1, n0, n1, h, jpeg) => ({ name: 'g', pos: Float64Array.from([e0, h, -n0, e1, h, -n0, e1, h, -n1, e0, h, -n1]),
+            faces: Uint32Array.from([0, 1, 2, 0, 2, 3]), uv: Float64Array.from([0, 0, 1, 0, 1, 1, 0, 1]), texture: jpeg });
+        const google = [quad(10, 90, 10, 90, 20, await jpegOf('#ff0000')), quad(-90, -60, 60, 90, 20, await jpegOf('#00ff00'))];
+        const plan = await BAKE.topView(google, 100, 0.25, flipV, { progress() {} });
+        // LiDAR : grille 2 m sur toute la zone
+        const n = 101, pos = [], faces = [];
+        for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) pos.push(-100 + 2 * i, 0, -(-100 + 2 * j));
+        for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) { const a = j * n + i; faces.push(a, a + 1, a + n, a + 1, a + n + 1, a + n); }
+        const parts = BAKE.split({ name: 'lidar_mns', pos: Float64Array.from(pos), faces: Uint32Array.from(faces) }, plan, flipV);
+        const cache = new Map();
+        const pixels = async (jpeg) => { if (cache.has(jpeg)) return cache.get(jpeg);
+            const img = new Image(); img.src = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' })); await img.decode();
+            const cv = document.createElement('canvas'); cv.width = cv.height = img.width;
+            const g = cv.getContext('2d'); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, img.width, img.width);
+            cache.set(jpeg, d); return d; };
+        // couleur lue au sommet (E, N) le plus proche, comme un logiciel 3D (V OpenGL apres uvForObj)
+        const read = async (E, N) => {
+            for (const t of parts) for (let k = 0; k < t.pos.length / 3; k++) {
+                if (Math.abs(t.pos[3 * k] - E) < 0.01 && Math.abs(-t.pos[3 * k + 2] - N) < 0.01) {
+                    const u = t.uv[2 * k], v = uvForObj(t.uv[2 * k + 1], flipV), d = await pixels(t.texture);
+                    const x = Math.min(d.width - 1, Math.floor(u * d.width)), y = Math.min(d.width - 1, Math.floor((1 - v) * d.width));
+                    return Array.from(d.data.slice(4 * (y * d.width + x), 4 * (y * d.width + x) + 3));
+                } }
+            return null; };
+        let uvOk = true;
+        for (const t of parts) for (const x of t.uv) if (x < 0 || x > 1) uvOk = false;
+        return { n: plan.n, size: plan.size, pieces: parts.length, uvOk, textures: new Set(parts.map(t => t.texName)).size,
+                 ne: await read(50, 50), sw: await read(-50, -50), nw: await read(-76, 76), edge: await read(88, 12) };
+    }""", [flip_v, tile_max])
+    if tile_max == 256:
+        assert res["n"] == 4 and res["pieces"] == 16 and res["textures"] == 16, res   # 800 px utiles -> 4 x 4
+    else:
+        assert res["n"] == 1 and res["size"] == 800, res                               # 200 m / 0,25 m/texel
+    assert res["uvOk"], res
+    for key in ("ne", "edge"):
+        assert res[key][0] > 200 and res[key][1] < 60, res
+    assert res["nw"][1] > 200 and res["nw"][0] < 60, res
     assert all(abs(c - 128) < 20 for c in res["sw"]), res

@@ -11,7 +11,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.bake import TopViewBaker, planar_uv  # noqa: E402
+from core import bake  # noqa: E402
+from core.bake import TiledTopView, TopViewBaker, split  # noqa: E402
 from core.job import Job, Params  # noqa: E402
 from tests import fake_ign as fi  # noqa: E402
 from tests import fake_rocktree as fk  # noqa: E402
@@ -27,6 +28,11 @@ def quad(e0, e1, n0, n1, h):
     """Quad horizontal au format OBJ (Y en haut, -Z = Nord), UV OpenGL."""
     v = np.array([[e0, h, -n0], [e1, h, -n0], [e1, h, -n1], [e0, h, -n1]], float)
     return v, np.array([[0, 1, 2], [0, 2, 3]]), np.array([[0, 0], [1, 0], [1, 1], [0, 1]], float)
+
+
+def planar_uv(v_enu, half):
+    """UV OpenGL d'une image couvrant toute la zone [-half, half]."""
+    return np.stack([(v_enu[:, 0] + half) / (2 * half), (v_enu[:, 1] + half) / (2 * half)], axis=1)
 
 
 def read(img, uv):
@@ -63,6 +69,42 @@ def test_texture_lookup_follows_uv():
     assert max(sw) < 60, sw
 
 
+def test_tiled_resolution_and_split(monkeypatch):
+    """Resolution d'origine (0,25 m/texel sur 200 m = 800 px) ; dalles de 256 px max -> 4 x 4, chaque morceau
+    du LiDAR lit la bonne couleur dans sa dalle, UV dans [0, 1]."""
+    monkeypatch.setattr(bake, "TILE_MAX", 256)
+    t = TiledTopView(100)
+    t.add(*quad(10, 90, 10, 90, 20), jpeg((255, 0, 0)))
+    t.add(*quad(-90, -60, 60, 90, 20), jpeg((0, 255, 0)))
+    plan = t.plan(0.25)
+    assert plan["n"] == 4 and plan["need"] == 800 and t.bake(plan)
+    # LiDAR : grille 2 m sur la zone (Est, Nord, haut)
+    g = -100 + 2 * np.arange(101)
+    E, N = np.meshgrid(g, g)
+    v = np.column_stack([E.ravel(), N.ravel(), np.zeros(E.size)])
+    j, i = np.mgrid[0:100, 0:100]
+    a = (j * 101 + i).ravel()
+    faces = np.concatenate([np.column_stack([a, a + 1, a + 101]), np.column_stack([a + 1, a + 102, a + 101])])
+    parts = split(v, faces, plan)
+    assert len(parts) == 16 and sum(len(p[3]) for p in parts) == len(faces)
+    imgs = {}
+
+    def color(e, n):
+        for r, c, pv, pf, uv in parts:
+            k = np.flatnonzero((np.abs(pv[:, 0] - e) < 1e-6) & (np.abs(pv[:, 1] - n) < 1e-6))
+            if len(k):
+                img = imgs.setdefault((r, c), Image.open(BytesIO(plan["images"][r][c])))
+                return read(img, uv[k[0]])
+
+    for r, c, pv, pf, uv in parts:
+        assert uv.min() >= 0 and uv.max() <= 1
+    for e, n, rgb in [(50, 50, "r"), (88, 12, "r"), (-76, 76, "g")]:
+        px = color(e, n)
+        assert (px[0] > 200 and px[1] < 60) if rgb == "r" else (px[1] > 200 and px[0] < 60), (e, n, px)
+    assert all(abs(int(x) - 128) < 20 for x in color(-50, -50))
+    assert t.plan(0.25, preview=True)["n"] == 1
+
+
 def test_speed_large_triangles():
     b = TopViewBaker(200, 4096)
     t0 = time.time()
@@ -78,18 +120,20 @@ def test_pipeline_textured_lidar(tmp_path):
         cfg["lidar"].update(ign.config())
         events = []
         p = Params(lat=fk.LAT, lon=fk.LON, radius=100, level=6, out_dir=str(tmp_path), name="t",
-                   lidar="mns", lidar_res=2, lidar_tex=2048)
+                   lidar="both", lidar_res=2)
         Job(cfg, p, lambda k, d: events.append((k, d))).run()
     finally:
         srv.close()
         ign.close()
     assert not [d for k, d in events if k == "log" and d["level"] == "ERROR"], events
     out = tmp_path / "t"
-    obj = (out / "t_lidar_mns.obj").read_text()
-    assert "mtllib t_lidar_mns.mtl" in obj and "usemtl m_lidar_mns" in obj and "\nvt " in obj
-    assert "map_Kd textures/lidar_mns.jpg" in (out / "t_lidar_mns.mtl").read_text()
-    img = Image.open(out / "textures" / "lidar_mns.jpg")
-    assert img.size == (2048, 2048)
+    for prod in ("mns", "mnt"):   # une seule texture, commune au MNS et au MNT
+        obj = (out / f"t_lidar_{prod}.obj").read_text()
+        assert f"mtllib t_lidar_{prod}.mtl" in obj and "usemtl m_lidar_texture" in obj and "\nvt " in obj
+        assert "map_Kd textures/lidar_texture.jpg" in (out / f"t_lidar_{prod}.mtl").read_text()
+    assert [x.name for x in (out / "textures").glob("lidar*")] == ["lidar_texture.jpg"]
+    img = Image.open(out / "textures" / "lidar_texture.jpg")
+    assert img.size == (256, 256)   # faux monde : 1 m/texel sur 200 m -> 200 px, minimum 256
     a = np.asarray(img).astype(int)
     assert (np.abs(a - 128).sum(axis=2) > 30).mean() > 0.05      # la 3D Google y est rendue
     assert any("Texture LiDAR" in d["msg"] for k, d in events if k == "log")

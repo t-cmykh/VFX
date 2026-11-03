@@ -300,11 +300,17 @@ class Job {
       await sleep(0, this.abort.signal);
       const files = tiles.length ? EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV) : [];
       if (this.withTex) for (const t of tiles) if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
-      // un fichier par produit LiDAR, dans le meme dossier que la 3D Google
-      for (const t of lidar) {
-        const lname = `${p.name}_${t.name}`;
-        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, !!t.texture, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
-        if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
+      // un fichier par produit LiDAR (MNS, MNT), dans le meme dossier que la 3D Google ; un objet par dalle
+      // de texture ; textures communes aux deux produits ecrites une fois
+      const written = new Set();
+      for (const product of [...new Set(lidar.map((t) => t.product || t.name))]) {
+        const parts = lidar.filter((t) => (t.product || t.name) === product);
+        const lname = `${p.name}_${product}`, withTex = parts.some((t) => t.texture);
+        for (const [path, content] of EXPORTERS[p.fmt](parts, lname, p, withTex, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+        for (const t of parts) {
+          const tn = t.texName || t.name;
+          if (t.texture && !written.has(tn)) { written.add(tn); files.push([`${p.name}/textures/${tn}.jpg`, t.texture]); }
+        }
       }
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
@@ -368,12 +374,16 @@ class Job {
       return;
     }
     await sleep(0, this.abort.signal);
-    const res = await BAKE.topView(tiles, p.half, p.lidarTex, p.flipV, ui);
-    if (!res) return;
-    for (const t of lidar) { t.uv = BAKE.planarUv(t, p.half, p.flipV); t.texture = res.jpeg; }
-    const cm = (100 * p.side / res.size).toFixed(0);
-    ui.log("INFO", `Texture LiDAR : vue de dessus Google ${res.size} x ${res.size} px (~${cm} cm/px), ${(res.jpeg.length / 1e6).toFixed(1)} Mo`);
-    if (res.size < p.lidarTex) ui.log("WARN", `Taille de texture limitée à ${res.size} px par cet appareil`);
+    // resolution d'origine des textures Google (m/texel au plus fin), decoupee en dalles si besoin
+    const plan = await BAKE.topView(tiles, p.half, this.texMpt, p.flipV, ui, this.estimateOnly);
+    if (!plan) return;
+    lidar.splice(0, lidar.length, ...lidar.flatMap((t) => BAKE.split(t, plan, p.flipV)));
+    const cm = (100 * (plan.cell + 2 * plan.pad) / plan.size).toFixed(1).replace(".", ",");
+    const mo = plan.images.flat().reduce((a, b) => a + b.length, 0) / 1e6;
+    const tiling = plan.n > 1 ? `${plan.n} x ${plan.n} dalles de ${plan.size} px` : `${plan.size} x ${plan.size} px`;
+    ui.log("INFO", `Texture LiDAR : vue de dessus Google, ${tiling} (~${cm} cm/px), ${mo.toFixed(1)} Mo`);
+    if (this.estimateOnly) ui.log("INFO", "Aperçu : texture LiDAR allégée ; le téléchargement prendra la résolution d'origine de Google");
+    else if (plan.capped) ui.log("WARN", `Zone très grande : texture LiDAR limitée à ${plan.n} x ${plan.n} dalles (résolution réduite)`);
   }
 
   // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
@@ -388,6 +398,7 @@ class Job {
     const mpts = [...todo.values()].map((m) => m.mpt).filter((x) => x > 0);
     const mpt = mpts.length ? Math.min(...mpts) : 0;
     this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
+    this.texMpt = mpt;
     if (this.estimateOnly) {
       this.estimate = todo.size;
       const prev = Job.previewSubset(candidates, todo, excl, CONFIG.previewMaxTiles);
@@ -572,7 +583,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "merge", "atlas", "lidar", "lidartex"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "merge", "atlas", "lidar"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -590,7 +601,7 @@ function launch(estimateOnly) {
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV, merge: $("merge").value === "1", atlas: $("atlas").value,
               lidar: $("lidar").value, lidarRes: LIDAR_CONFIG.res, align: true,
-              lidarTex: parseInt($("lidartex").value, 10) };
+              lidarTex: true };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
@@ -603,7 +614,6 @@ function launch(estimateOnly) {
 function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
   $("merge").disabled = $("content").value === "none";
-  $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);

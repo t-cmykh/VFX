@@ -113,14 +113,17 @@ zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniqu
   LiDAR (Est, Nord, hauteur) pour qu'ils se superposent. Il vérifie au passage le sens Nord/Sud des
   grilles IGN et le corrige si besoin. Le log donne le décalage trouvé et la corrélation (de 0 à 1) ;
   sous 0,3 le calage est jugé non fiable et le LiDAR reste à sa position géographique.
-- **Texture LiDAR** (avec Contenu = Géométrie + textures) : la 3D Google
-  texturée est rendue vue de dessus (2048, 4096 ou 8192 px sur toute la zone ; le log donne les cm/px)
-  et projetée verticalement sur les maillages LiDAR, après le calage. Exportée en
-  `textures/lidar_mns.jpg` (et `lidar_mnt.jpg`) avec les UV correspondantes. Limites : les façades
-  verticales reçoivent une texture étirée (projection depuis le dessus) ; là où Google n'a pas de
-  données, fond gris ; certains téléphones plafonnent la taille (le log le signale). Version Python :
-  rendu fait par le processeur (numpy + Pillow, `core/bake.py`), compter de l'ordre de 15 à 60 s en
-  4096 px selon la zone, environ 4 fois plus en 8192 px ; le log donne la durée.
+- **Texture LiDAR** (automatique avec Contenu = Géométrie + textures) : la 3D Google texturée est
+  rendue vue de dessus à la **résolution d'origine de ses textures** (le m/texel le plus fin des tuiles,
+  affiché dans le log) et projetée verticalement sur les maillages LiDAR, après le calage. Quand il
+  faut plus de 4096 px (limite des canvas de Safari iOS), la zone est découpée en **dalles de 4096 px**
+  au plus : un objet LiDAR et une texture par dalle (`lidar_mns_r0c1`, `textures/lidar_r0c1.jpg`,
+  ligne 0 = Nord, colonne 0 = Ouest), avec 2 m de recouvrement. Sinon une seule texture,
+  `textures/lidar_texture.jpg`. Les textures sont communes au MNS et au MNT. Au plus 6 × 6 dalles sur
+  le site, 8 × 8 en Python (au-delà, résolution réduite, le log le dit). **Tester** utilise une seule
+  texture allégée. Limites : façades verticales étirées (projection depuis le dessus), fond gris là où
+  Google n'a pas de données. Version Python : rendu par le processeur (numpy + Pillow, `core/bake.py`),
+  de l'ordre de 15 à 60 s par dalle de 4096 px ; le log donne la durée.
 - Si le MNT LiDAR HD n'existe pas encore sur la zone, repli automatique sur le RGE ALTI (1 m).
 - **Contenu → Rien (LiDAR seul)** pour ne pas interroger Google.
 - **Dalles LAZ** (version Python seulement) : télécharge les dalles brutes du nuage de points

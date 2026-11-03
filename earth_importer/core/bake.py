@@ -32,9 +32,14 @@ class TopViewBaker:
 
     FLUSH_TRIS = 150_000
 
-    def __init__(self, half, size):
+    def __init__(self, half, size, x0=None, y_top=None, width=None):
+        """Image size x size couvrant le carre [x0, x0 + width] (Est) x [y_top - width, y_top] (Nord) ;
+        par defaut toute la zone [-half, half]."""
         self.half, self.size = float(half), int(size)
-        self.scale = self.size / (2 * self.half)
+        self.x0 = -self.half if x0 is None else float(x0)
+        self.y_top = self.half if y_top is None else float(y_top)
+        self.width = 2 * self.half if width is None else float(width)
+        self.scale = self.size / self.width
         self.z = np.full(self.size * self.size, -np.inf, dtype=np.float32)
         self.rgb = np.full((self.size * self.size, 3), BACKGROUND, dtype=np.uint8)
         self.meshes = 0
@@ -43,16 +48,16 @@ class TopViewBaker:
     def add(self, v, faces, uv, jpeg):
         """v : sommets (n, 3) Y en haut (X = Est, -Z = Nord) ; uv : convention OpenGL (OBJ) ; jpeg : octets."""
         S = self.size
-        P = np.stack([(v[:, 0] + self.half) * self.scale,      # colonne (Est)
-                      (v[:, 2] + self.half) * self.scale,      # ligne depuis le Nord (-Z = Nord)
+        P = np.stack([(v[:, 0] - self.x0) * self.scale,        # colonne (Est)
+                      (v[:, 2] + self.y_top) * self.scale,     # ligne depuis le Nord (-Z = Nord)
                       v[:, 1],                                 # hauteur
                       uv[:, 0], uv[:, 1]], axis=1).astype(np.float32)
         T = P[faces]                                           # (t, 3 sommets, 5)
         lo, hi = T[:, :, :2].min(axis=1), T[:, :, :2].max(axis=1)
         T = T[(hi[:, 0] >= 0) & (hi[:, 1] >= 0) & (lo[:, 0] < S) & (lo[:, 1] < S)]
-        self.meshes += 1
         if not len(T):
             return
+        self.meshes += 1
         tex = np.asarray(Image.open(BytesIO(jpeg)).convert("RGB"))
         tid = np.full((len(T), 3, 1), len(self._tex), np.float32)
         self._tris.append(np.concatenate([T, tid], axis=2))  # 6e colonne : maillage (texture)
@@ -130,7 +135,79 @@ class TopViewBaker:
         return buf.getvalue()
 
 
-def planar_uv(v_enu, half):
-    """UV (convention OpenGL / OBJ) de projection verticale : sommets (n, 3) Est, Nord, haut."""
-    side = 2 * half
-    return np.stack([(v_enu[:, 0] + half) / side, (v_enu[:, 1] + half) / side], axis=1)
+TILE_MAX = 4096     # cote max d'une dalle de texture (comme la version web)
+MAX_TILES = 8       # au plus 8 x 8 dalles
+PAD = 2.0           # marge (m) autour de chaque dalle : les triangles a cheval restent dans leur texture
+
+
+class TiledTopView:
+    """Vue de dessus de la 3D Google a la resolution d'origine de ses textures, en dalles de TILE_MAX px.
+    Les maillages sont gardes pendant le telechargement (sommets + JPEG), puis rendus dalle par dalle."""
+
+    def __init__(self, half):
+        self.half = float(half)
+        self.meshes = []
+
+    def add(self, v, faces, uv, jpeg):
+        self.meshes.append((np.asarray(v, np.float32), np.asarray(faces), np.asarray(uv, np.float32), jpeg))
+
+    def plan(self, mpt, preview=False):
+        need = int(np.ceil(2 * self.half / (mpt if mpt and mpt > 0 else 0.1)))
+        n = 1 if preview else max(1, -(-need // TILE_MAX))
+        capped = n > MAX_TILES
+        n = min(n, MAX_TILES)
+        pad = PAD if n > 1 else 0.0
+        cell = 2 * self.half / n
+        size = min(TILE_MAX, int(np.ceil(need * (cell + 2 * pad) / (2 * self.half) / 4)) * 4)
+        return {"n": n, "size": max(size, 256), "cell": cell, "pad": pad, "half": self.half,
+                "need": need, "capped": capped}
+
+    def bake(self, plan, progress=lambda done, total: None):
+        """Remplit plan["images"][ligne][colonne] (JPEG ; ligne 0 = Nord, colonne 0 = Ouest). False si rien."""
+        n, cell, pad, size = plan["n"], plan["cell"], plan["pad"], plan["size"]
+        images, any_data = [], False
+        for r in range(n):
+            images.append([])
+            for c in range(n):
+                progress(r * n + c, n * n)
+                b = TopViewBaker(self.half, size, x0=-self.half + c * cell - pad,
+                                 y_top=self.half - r * cell + pad, width=cell + 2 * pad)
+                for m in self.meshes:
+                    b.add(*m)
+                jpeg = b.jpeg()
+                any_data |= jpeg is not None
+                images[r].append(jpeg or blank_jpeg(size))
+        plan["images"] = images
+        return any_data
+
+
+def blank_jpeg(size):
+    buf = BytesIO()
+    Image.new("RGB", (size, size), (BACKGROUND,) * 3).save(buf, "JPEG", quality=90)
+    return buf.getvalue()
+
+
+def split(v_enu, faces, plan):
+    """Decoupe un maillage LiDAR (sommets Est, Nord, haut) selon les dalles du plan (centre des triangles).
+    Renvoie [(ligne, colonne, sommets, triangles, uv OpenGL)]."""
+    n, cell, pad, half = plan["n"], plan["cell"], plan["pad"], plan["half"]
+    w = cell + 2 * pad
+    cen = v_enu[faces].mean(axis=1)
+    col = np.clip(np.floor((cen[:, 0] + half) / cell), 0, n - 1).astype(int)
+    row = np.clip(np.floor((half - cen[:, 1]) / cell), 0, n - 1).astype(int)
+    out = []
+    for r in range(n):
+        for c in range(n):
+            f = faces[(row == r) & (col == c)]
+            if not len(f):
+                continue
+            used, remap = np.unique(f, return_inverse=True)
+            v = v_enu[used]
+            x0, y0 = -half + c * cell - pad, half - (r + 1) * cell - pad
+            uv = np.stack([(v[:, 0] - x0) / w, (v[:, 1] - y0) / w], axis=1)
+            out.append((r, c, v, remap.reshape(-1, 3), uv))
+    return out
+
+
+def tex_name(plan, r, c):
+    return f"lidar_r{r}c{c}" if plan["n"] > 1 else "lidar_texture"
