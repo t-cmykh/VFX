@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import requests
 
+from .bake import planar_uv
 from .fetch import Cancelled, Fetcher, FetchError
 
 # ---------------------------------------------------------------- Lambert-93 (RGF93 / GRS80, EPSG:2154)
@@ -212,7 +213,8 @@ class Lidar:
             self.log("INFO", f"{prod.upper()} : {100 * holes:.0f} % de la grille sans donnee (trous)")
         return enu[used], remap.reshape(-1, 3)
 
-    def write_obj(self, out_dir, name, prod):
+    def write_obj(self, out_dir, name, prod, texture=None):
+        """OBJ du produit ; texture = JPEG de la vue de dessus Google (core/bake.py), projetee verticalement."""
         res = self.mesh(prod)
         if res is None:
             return None
@@ -221,9 +223,21 @@ class Lidar:
         with open(path, "w") as f:
             f.write(f"# Earth Importer - LiDAR HD IGN {prod.upper()} - Y en haut, X = Est, -Z = Nord, metres\n")
             f.write(f"# origine : {self.p.lat:.7f}, {self.p.lon:.7f} (meme repere que la 3D Google)\n")
+            if texture:
+                mtl = path.with_suffix(".mtl")
+                (Path(out_dir) / "textures").mkdir(exist_ok=True)
+                (Path(out_dir) / "textures" / f"lidar_{prod}.jpg").write_bytes(texture)
+                mtl.write_text(f"newmtl m_lidar_{prod}\nKd 1 1 1\nKs 0 0 0\nd 1\nillum 1\n"
+                               f"map_Kd textures/lidar_{prod}.jpg\n")
+                f.write(f"mtllib {mtl.name}\n")
             f.write(f"o lidar_{prod}\n")
             np.savetxt(f, np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1), fmt="v %.3f %.3f %.3f")
-            np.savetxt(f, faces + 1, fmt="f %d %d %d")
+            if texture:
+                np.savetxt(f, planar_uv(v, self.half), fmt="vt %.6f %.6f")
+                f.write(f"usemtl m_lidar_{prod}\n")
+                np.savetxt(f, np.repeat(faces + 1, 2, axis=1), fmt="f %d/%d %d/%d %d/%d")
+            else:
+                np.savetxt(f, faces + 1, fmt="f %d %d %d")
         self.log("INFO", f"LiDAR {prod.upper()} : {len(faces):,} triangles -> {path.name}".replace(",", " "))
         return path
 

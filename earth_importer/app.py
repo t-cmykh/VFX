@@ -71,6 +71,7 @@ class Request(BaseModel):
     lidar_res: float = 1.0
     laz: bool = False
     align: bool = True
+    lidar_tex: int = 4096
 
 
 def start(req, estimate_only):
