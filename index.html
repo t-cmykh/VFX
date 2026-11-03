@@ -843,6 +843,14 @@ label.place { position: relative; }
   <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
     <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
   </label>
+  <label title="Projette la texture de la 3D Google (vue de dessus) sur le maillage LiDAR. Demande Contenu = Géométrie + textures">Texture LiDAR
+    <select id="lidartex">
+      <option value="0">Aucune</option>
+      <option value="2048">Google 2048 px</option>
+      <option value="4096" selected>Google 4096 px</option>
+      <option value="8192">Google 8192 px</option>
+    </select>
+  </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
     <select id="merge">
       <option value="0">Tuiles séparées</option>
@@ -2812,6 +2820,88 @@ if (typeof module !== "undefined") module.exports = { ALIGN };
 </script>
 <script>
 "use strict";
+// Texture du LiDAR IGN prise sur la 3D Google : la 3D Google texturee est rendue vue de dessus
+// (camera orthographique, haut de l'image = Nord) dans une image carree couvrant la zone, puis
+// plaquee sur les maillages LiDAR par projection verticale (UV = position Est/Nord du sommet).
+// Les faces verticales (facades) recoivent donc une texture etiree.
+
+const BAKE = {
+  background: 0x808080,
+
+  // tuiles Google (format exporteur, UV convention rocktree) -> JPEG (Uint8Array) de size x size px
+  async topView(tiles, half, size, flipV, ui) {
+    const renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+    size = Math.min(size, renderer.capabilities.maxTextureSize, renderer.capabilities.maxRenderbufferSize || Infinity);
+    renderer.outputEncoding = THREE.LinearEncoding;  // octets des JPEG recopies tels quels
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(BAKE.background);
+    const urls = [];
+    let top = -Infinity, bottom = Infinity, done = 0;
+    const textured = tiles.filter((t) => t.uv && t.texture);
+    try {
+      for (const t of textured) {
+        const url = URL.createObjectURL(new Blob([t.texture], { type: "image/jpeg" }));
+        urls.push(url);
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const tex = new THREE.Texture(img);  // flipY : convention OpenGL, comme previewUv
+        tex.needsUpdate = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(Float32Array.from(t.pos), 3));
+        g.setAttribute("uv", new THREE.BufferAttribute(previewUv(t.uv, flipV), 2));
+        g.setIndex(new THREE.BufferAttribute(t.faces instanceof Uint32Array ? t.faces : Uint32Array.from(t.faces), 1));
+        scene.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })));
+        for (let i = 1; i < t.pos.length; i += 3) { top = Math.max(top, t.pos[i]); bottom = Math.min(bottom, t.pos[i]); }
+        if (++done % 50 === 0) ui.progress("Texture LiDAR : lecture des images Google", done, textured.length);
+      }
+      if (!textured.length) return null;
+      // vue de dessus : X = Est vers la droite, -Z = Nord vers le haut
+      const cam = new THREE.OrthographicCamera(-half, half, half, -half, 1, top - bottom + 200);
+      cam.position.set(0, top + 100, 0);
+      cam.up.set(0, 0, -1);
+      cam.lookAt(0, bottom, 0);
+      ui.progress("Texture LiDAR : rendu vue de dessus", 0, 0);
+      const target = new THREE.WebGLRenderTarget(size, size);
+      renderer.setRenderTarget(target);
+      renderer.render(scene, cam);
+      const px = new Uint8Array(size * size * 4);
+      renderer.readRenderTargetPixels(target, 0, 0, size, size, px);
+      renderer.setRenderTarget(null);
+      target.dispose();
+      // lignes WebGL du bas vers le haut -> image du haut (Nord) vers le bas
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext("2d"), img = ctx.createImageData(size, size), row = 4 * size;
+      for (let y = 0; y < size; y++) img.data.set(px.subarray((size - 1 - y) * row, (size - y) * row), y * row);
+      ctx.putImageData(img, 0, 0);
+      const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.9));
+      return { jpeg: new Uint8Array(await blob.arrayBuffer()), size };
+    } finally {
+      scene.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) { if (o.material.map) o.material.map.dispose(); o.material.dispose(); } });
+      urls.forEach((u) => URL.revokeObjectURL(u));
+      renderer.dispose();
+      renderer.forceContextLoss();
+    }
+  },
+
+  // UV de projection verticale d'une tuile LiDAR, en convention rocktree (comme les tuiles Google)
+  planarUv(tile, half, flipV) {
+    const p = tile.pos, uv = new Float64Array(2 * p.length / 3), side = 2 * half;
+    for (let i = 0, k = 0; i < p.length; i += 3, k += 2) {
+      uv[k] = (p[i] + half) / side;
+      const v = (-p[i + 2] + half) / side;  // Nord en haut (convention OpenGL)
+      uv[k + 1] = flipV ? 1 - v : v;         // inverse de uvForObj : les exporteurs la reappliquent
+    }
+    return uv;
+  },
+};
+
+</script>
+<script>
+"use strict";
 // Ecriture OBJ / USDA / GLB et archive ZIP, sans dependance.
 // Une tuile : { name, pos: Float64Array (x,y,z en metres, Y en haut, X = Est, -Z = Nord),
 //               faces: Uint32Array (indices locaux), uv: Float64Array|null (convention OpenGL),
@@ -3505,12 +3595,13 @@ class Job {
         await this.alignLidar(tiles, lidar, products);
         lidar.splice(0, lidar.length, ...lidar.filter(Boolean));
       }
+      if (lidar.length && p.lidarTex) await this.textureLidar(tiles, lidar);
       if (this.estimateOnly) {
         this.ui.progress("Aperçu 3D", 0, 0);
         await sleep(0, this.abort.signal);
         const shown = [
           ...tiles.map((t) => ({ ...t, uv: t.uv && this.withTex ? previewUv(t.uv, p.flipV) : null, texture: this.withTex ? t.texture : null })),
-          ...lidar,
+          ...lidar.map((t) => ({ ...t, uv: t.uv ? previewUv(t.uv, p.flipV) : null })),
         ];
         const tris = this.ui.preview(shown);
         const what = p.content !== "none" ? `${this.estimate} tuiles à télécharger` : "LiDAR";
@@ -3525,7 +3616,8 @@ class Job {
       // un fichier par produit LiDAR, dans le meme dossier que la 3D Google
       for (const t of lidar) {
         const lname = `${p.name}_${t.name}`;
-        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, false, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, !!t.texture, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+        if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
       }
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
@@ -3579,6 +3671,22 @@ class Job {
     for (const t of lidar) if (t) ALIGN.apply(t, sol);
     const f = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(1)} m`;
     ui.log("INFO", `LiDAR calé sur Google : Est ${f(sol.dE)}, Nord ${f(sol.dN)}, hauteur ${f(sol.dH)} (corrélation ${sol.score.toFixed(2)})`);
+  }
+
+  // Texture des maillages LiDAR : vue de dessus de la 3D Google texturee, projetee verticalement
+  async textureLidar(tiles, lidar) {
+    const p = this.p, ui = this.ui;
+    if (!tiles.some((t) => t.uv && t.texture)) {
+      ui.log("WARN", "Texture LiDAR : pas de texture Google (choisir Contenu = Géométrie + textures)");
+      return;
+    }
+    await sleep(0, this.abort.signal);
+    const res = await BAKE.topView(tiles, p.half, p.lidarTex, p.flipV, ui);
+    if (!res) return;
+    for (const t of lidar) { t.uv = BAKE.planarUv(t, p.half, p.flipV); t.texture = res.jpeg; }
+    const cm = (100 * p.side / res.size).toFixed(0);
+    ui.log("INFO", `Texture LiDAR : vue de dessus Google ${res.size} x ${res.size} px (~${cm} cm/px), ${(res.jpeg.length / 1e6).toFixed(1)} Mo`);
+    if (res.size < p.lidarTex) ui.log("WARN", `Taille de texture limitée à ${res.size} px par cet appareil`);
   }
 
   // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
@@ -3777,7 +3885,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align", "lidartex"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -3794,7 +3902,8 @@ function launch(estimateOnly) {
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked };
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked,
+              lidarTex: parseInt($("lidartex").value, 10) };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
@@ -3809,6 +3918,7 @@ function syncAtlas() {
   $("merge").disabled = $("content").value === "none";
   $("lidarres").disabled = $("lidar").value === "none";
   $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
+  $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);

@@ -56,6 +56,14 @@
   <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
     <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
   </label>
+  <label title="Projette la texture de la 3D Google (vue de dessus) sur le maillage LiDAR. Demande Contenu = Géométrie + textures">Texture LiDAR
+    <select id="lidartex">
+      <option value="0">Aucune</option>
+      <option value="2048">Google 2048 px</option>
+      <option value="4096" selected>Google 4096 px</option>
+      <option value="8192">Google 8192 px</option>
+    </select>
+  </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
     <select id="merge">
       <option value="0">Tuiles séparées</option>
@@ -105,6 +113,7 @@
 <!-- @inline-js rocktree.js -->
 <!-- @inline-js lidar.js -->
 <!-- @inline-js align.js -->
+<!-- @inline-js bake.js -->
 <!-- @inline-js exporters.js -->
 <!-- @inline-js merge.js -->
 <!-- @inline-js app.js -->
