@@ -16,7 +16,7 @@ import requests
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -62,7 +62,7 @@ class Request(BaseModel):
     lat: float
     lon: float
     radius: float = 200
-    level: int = 18
+    level: int = 22  # toujours la meilleure definition
     content: str = "geo_tex"
     fmt: str = "obj"
     out_dir: str = ""
@@ -112,6 +112,14 @@ def estimate(req: Request):
 @app.post("/api/download")
 def download(req: Request):
     return start(req, False)
+
+
+@app.get("/api/preview")
+def preview():
+    job = STATE["job"]
+    if not job or job.preview is None:
+        raise HTTPException(404, "Pas d'apercu : cliquer sur Tester")
+    return Response(job.preview, media_type="application/octet-stream")
 
 
 @app.post("/api/cancel")

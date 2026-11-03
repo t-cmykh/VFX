@@ -161,8 +161,8 @@ class Lidar:
         if self.products():
             h, w = self.check_size()
             for prod in self.products():
-                lines.append(f"LiDAR {prod.upper()} : grille {w} x {h} au pas de {self.res:g} m, "
-                             f"~{2 * h * w:,} triangles".replace(",", " "))
+                tris = f"{2 * h * w:,}".replace(",", " ")
+                lines.append(f"LiDAR {prod.upper()} : grille {w} x {h} au pas de {self.res:g} m, ~{tris} triangles")
         if self.p.laz:
             tiles = self.laz_tiles()
             sizes = [self.remote_size(u) for _, u in tiles]

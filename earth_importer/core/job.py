@@ -1,5 +1,6 @@
 """Une operation complete : test du protocole -> parcours de l'octree -> telechargement -> OBJ -> ABC/USD."""
 import glob
+import json
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ class Params:
     lat: float
     lon: float
     radius: float = 200.0
-    level: int = 18
+    level: int = 22            # toujours la meilleure definition (le parcours s'arrete avec les donnees)
     content: str = "geo_tex"   # "geo_tex" | "geo" | "none" (pas de 3D Google)
     fmt: str = "obj"           # "obj" | "abc" | "usd"
     out_dir: str = "."
@@ -50,7 +51,7 @@ class Params:
         if self.content == "none" and self.lidar == "none" and not self.laz:
             raise ValueError("rien a telecharger : choisis la 3D Google et/ou le LiDAR")
         if not self.name:
-            self.name = f"earth_{self.lat:.5f}_{self.lon:.5f}_r{self.radius:.0f}_l{self.level}"
+            self.name = f"earth_{self.lat:.5f}_{self.lon:.5f}_r{self.radius:.0f}"
         self.name = re.sub(r"[^\w.\-]+", "_", self.name)
 
 
@@ -86,6 +87,8 @@ class Job:
         self.fetcher = Fetcher(cfg, cache_dir=self.cache_dir, cancel=self.cancel, log=self.log)
         self.frame = LocalFrame(params.lat, params.lon)  # rayon reel lu au test de sante
         self.with_tex = params.content == "geo_tex"
+        self.preview = None         # apercu 3D empaquete (bouton Tester)
+        self.preview_tiles = []
 
     # ------------------------------------------------------------ evenements
     def log(self, level, msg):
@@ -182,7 +185,7 @@ class Job:
         t0 = time.time()
         try:
             self.p.validate()
-            self.log("INFO", f"Zone {self.p.lat:.6f}, {self.p.lon:.6f} - rayon {self.p.radius:.0f} m - niveau {self.p.level}")
+            self.log("INFO", f"Zone {self.p.lat:.6f}, {self.p.lon:.6f} - rayon {self.p.radius:.0f} m - definition maximale")
             outputs = []
             if self.p.content != "none":
                 final = self.run_google()
@@ -191,7 +194,13 @@ class Job:
             if self.p.lidar != "none" or self.p.laz:
                 outputs += self.run_lidar()
             if self.estimate_only:
-                self.emit("state", {"state": "finished"})
+                if not self.preview_tiles:
+                    raise RuntimeError("Rien a previsualiser.")
+                self.progress("Aperçu 3D", 0, 0)
+                tris = self.publish_preview(self.preview_tiles)
+                what = f"{self.estimated} tuiles a telecharger" if self.p.content != "none" else "LiDAR"
+                self.log("OK", f"Apercu : {tris:,} triangles affiches - {what}".replace(",", " "))
+                self.emit("state", {"state": "finished", "preview": True})
                 return
             if not outputs:
                 raise RuntimeError("Rien n'a ete exporte.")
@@ -219,7 +228,13 @@ class Job:
         mpt = min((m.meters_per_texel for m in todo.values() if m.meters_per_texel), default=0)
         self.log("INFO", f"{len(todo)} tuiles a telecharger (niveaux {levels[0]}-{levels[-1]}, ~{mpt:.2f} m/texel au plus fin)")
         if self.estimate_only:
+            self.estimated = len(todo)
             self.emit("estimate", {"tiles": len(todo), "levels": levels})
+            sub, sub_excl, level = self.preview_subset(candidates, todo, excl, self.cfg.get("preview_max_tiles", 400))
+            if level:
+                self.log("INFO", f"Apercu allege : {len(sub)} tuiles (niveau {level} au plus) ; "
+                                 "le telechargement prendra la meilleure definition")
+            self.preview_tiles += self.preview_google(sub, sub_excl)
             return None
         self.out.mkdir(parents=True, exist_ok=True)
         obj_path = self.write_obj(todo, excl)
@@ -232,6 +247,15 @@ class Job:
         lid = Lidar(self.cfg, self.p, self.frame, self.cache_dir, self.cancel, self.log, self.progress)
         if self.estimate_only:
             lid.estimate()
+            if lid.products():
+                lid.check_size()
+            for prod in lid.products():
+                res = lid.mesh(prod)
+                if res:
+                    v, faces = res
+                    self.preview_tiles.append({"name": f"lidar_{prod}", "faces": faces,
+                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1),
+                                               "color": 0x7d9468 if prod == "mnt" else 0x9ea4ad})
             return []
         outputs = []
         self.out.mkdir(parents=True, exist_ok=True)
@@ -295,45 +319,127 @@ class Job:
                          f"{self.fetcher.downloaded_bytes / 1e6:.1f} Mo telecharges".replace(",", " "))
         return obj_path
 
-    def write_mesh(self, obj, mtl, tex_dir, name, node, mesh, exclude, flip_v, counts):
+    def mesh_arrays(self, node, mesh, exclude, flip_v):
+        """Sommets (Y en haut, X = Est, -Z = Nord), triangles 0-based, UV (OpenGL) et JPEG d'un maillage,
+        ou None s'il ne reste rien apres exclusion des octants et decoupe."""
         tris = mesh.triangles
         if exclude and len(tris):
             tris = tris[~np.isin(mesh.octants[tris[:, 0]], list(exclude))]
         if not len(tris):
-            return
+            return None
         enu = self.frame.to_enu(rt.mesh_to_ecef(node, mesh))
         if self.p.crop:
             outside = np.hypot(enu[:, 0], enu[:, 1]) > self.p.radius
             tris = tris[~outside[tris].all(axis=1)]
             if not len(tris):
-                return
+                return None
         used, remap = np.unique(tris, return_inverse=True)
-        faces = remap.reshape(-1, 3) + 1
+        faces = remap.reshape(-1, 3)
         v = enu[used]
-        obj.write(f"o tile_{name}\n")
-        np.savetxt(obj, np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1), fmt="v %.4f %.4f %.4f")
-        has_uv = self.with_tex and mesh.uv is not None
-        if has_uv:
-            uv = mesh.uv[used].copy()
+        v = np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1)
+        uv = tex = None
+        if self.with_tex and mesh.uv is not None:
+            uv = mesh.uv[used].astype(np.float64)
             if flip_v:
                 uv[:, 1] = 1.0 - uv[:, 1]
+            if mesh.texture and mesh.texture_format == rt.TEX_JPG:
+                tex = mesh.texture
+            elif mesh.texture:
+                tex = False  # CRN : non decode
+        return v, faces, uv, tex
+
+    def write_mesh(self, obj, mtl, tex_dir, name, node, mesh, exclude, flip_v, counts):
+        res = self.mesh_arrays(node, mesh, exclude, flip_v)
+        if res is None:
+            return
+        v, faces, uv, tex = res
+        faces = faces + 1
+        obj.write(f"o tile_{name}\n")
+        np.savetxt(obj, v, fmt="v %.4f %.4f %.4f")
+        if uv is not None:
             np.savetxt(obj, uv, fmt="vt %.6f %.6f")
             mat = f"m_{name}"
             mtl.write(f"newmtl {mat}\nKd 1 1 1\nKs 0 0 0\nd 1\nillum 1\n")
-            if mesh.texture and mesh.texture_format == rt.TEX_JPG:
-                (tex_dir / f"{name}.jpg").write_bytes(mesh.texture)
+            if tex:
+                (tex_dir / f"{name}.jpg").write_bytes(tex)
                 mtl.write(f"map_Kd textures/{name}.jpg\n")
-            elif mesh.texture:
+            elif tex is False:
                 counts["crn"] += 1
             mtl.write("\n")
             obj.write(f"usemtl {mat}\n")
             f = np.repeat(faces, 2, axis=1) + np.tile([counts["v"], counts["vt"]], 3)
             np.savetxt(obj, f, fmt="f %d/%d %d/%d %d/%d")
-            counts["vt"] += len(used)
+            counts["vt"] += len(v)
         else:
             np.savetxt(obj, faces + counts["v"], fmt="f %d %d %d")
-        counts["v"] += len(used)
+        counts["v"] += len(v)
         counts["tris"] += len(faces)
+
+    # ------------------------------------------------------------ apercu 3D (bouton Tester)
+    @staticmethod
+    def preview_subset(candidates, todo, excl, max_tiles):
+        """Tuiles d'un apercu limite a max_tiles : on retire les niveaux les plus fins tant qu'il y en a trop."""
+        level = max(len(k) for k in todo)
+        while len(todo) > max_tiles and level > 1:
+            level -= 1
+            sub = {k: m for k, m in candidates.items() if len(k) <= level}
+            e = Job.exclusions(sub)
+            t = {k: m for k, m in sub.items() if len(e[k]) < 8}
+            if not t:
+                break
+            todo, excl = t, e
+            if len(todo) <= max_tiles:
+                return todo, excl, level
+        return todo, excl, 0
+
+    def preview_google(self, todo, excl):
+        """Telecharge (cache disque) et prepare les tuiles de l'apercu."""
+        tiles = []
+        flip_v = self.cfg.get("flip_v", True)
+        done = 0
+        self.progress("Aperçu", 0, len(todo))
+        with ThreadPoolExecutor(self.cfg.get("workers", 6)) as pool:
+            futures = [pool.submit(self.download_node, p, m) for p, m in sorted(todo.items())]
+            for f in as_completed(futures):
+                if self.cancel.is_set():
+                    for x in futures:
+                        x.cancel()
+                    raise Cancelled()
+                try:
+                    path, node = f.result()
+                except Cancelled:
+                    raise
+                except (FetchError, ValueError, IndexError) as e:
+                    self.log("WARN", f"Tuile ignoree : {e}")
+                else:
+                    for i, mesh in enumerate(node.meshes):
+                        res = self.mesh_arrays(node, mesh, excl[path], flip_v)
+                        if res:
+                            v, faces, uv, tex = res
+                            tiles.append({"name": f"tile_{path}_{i}", "pos": v, "faces": faces,
+                                          "uv": uv, "texture": tex or None})
+                done += 1
+                self.progress("Aperçu", done, len(todo))
+        return tiles
+
+    def publish_preview(self, tiles):
+        """Empaquette les tuiles pour l'interface : [u32 taille JSON][JSON][donnees alignees sur 4 octets]."""
+        head, chunks = [], []
+        for t in tiles:
+            pos = np.ascontiguousarray(t["pos"], dtype="<f4")
+            faces = np.ascontiguousarray(t["faces"], dtype="<u4")
+            uv = None if t.get("uv") is None else np.ascontiguousarray(t["uv"], dtype="<f4")
+            tex = t.get("texture") or b""
+            head.append({"name": t["name"], "nv": len(pos), "nf": len(faces), "uv": uv is not None,
+                         "tex": len(tex), "color": t.get("color")})
+            chunks += [pos.tobytes(), faces.tobytes()] + ([uv.tobytes()] if uv is not None else [])
+            chunks.append(tex + b"\0" * (-len(tex) % 4))
+        meta = json.dumps({"tiles": head}).encode()
+        meta += b" " * (-len(meta) % 4)
+        self.preview = len(meta).to_bytes(4, "little") + meta + b"".join(chunks)
+        tris = sum(h["nf"] for h in head)
+        self.emit("preview", {"tiles": len(head), "triangles": tris, "bytes": len(self.preview)})
+        return tris
 
     # ------------------------------------------------------------ ABC / USD
     def blender_export(self, obj_path, with_tex):

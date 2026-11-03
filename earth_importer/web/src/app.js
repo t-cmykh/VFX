@@ -14,6 +14,8 @@ const CONFIG = {
   maxRetries: 5,
   textureFormats: [1, 6],
   flipV: true,          // comme le decodeur de Google ; la case "Inverser V" de l'interface le contredit
+  maxLevel: 22,         // toujours la meilleure definition disponible (le parcours s'arrete ou s'arretent les donnees)
+  previewMaxTiles: 400, // au-dela, l'apercu (bouton Tester) descend d'un ou plusieurs niveaux
 };
 const base = new URLSearchParams(location.search).get("base");  // tests : faux serveur
 if (base) Object.assign(CONFIG, { baseUrl: base, minInterval: 0, maxRetries: 1 });
@@ -175,6 +177,21 @@ class Job {
     return candidates;
   }
 
+  // tuiles d'un apercu limite a maxTiles : on retire les niveaux les plus fins tant qu'il y en a trop
+  static previewSubset(candidates, todo, excl, maxTiles) {
+    let level = Math.max(...[...todo.keys()].map((k) => k.length));
+    while (todo.size > maxTiles && level > 1) {
+      level--;
+      const sub = new Map([...candidates].filter(([k]) => k.length <= level));
+      const e = Job.exclusions(sub.keys());
+      const t = new Map([...sub].filter(([k]) => e.get(k).size < 8));
+      if (!t.size) break;
+      todo = t; excl = e;
+      if (todo.size <= maxTiles) return { todo, excl, level };
+    }
+    return { todo, excl, level: 0 };
+  }
+
   static exclusions(paths) {
     paths = [...paths];
     const excl = new Map([...paths].map((p) => [p, new Set()]));
@@ -249,27 +266,31 @@ class Job {
   async run() {
     const t0 = performance.now(), p = this.p;
     try {
-      this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - carré de ${p.side} m - niveau ${p.level}`);
+      this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - carré de ${p.side} m - définition maximale`);
       this.frame = GEO.frame(p.lat, p.lon);
       const products = LIDAR.products(p.lidar);
       if (products.length) LIDAR.checkSize(p);
       let tiles = [];
       if (p.content !== "none") tiles = await this.google();
-      if (this.estimateOnly) {
-        if (products.length) {
-          const [h, w] = LIDAR.shape(p, p.lidarRes);
-          for (const prod of products)
-            this.ui.log("INFO", `LiDAR ${prod.toUpperCase()} : grille ${w} x ${h} au pas de ${p.lidarRes} m, ~${(2 * h * w).toLocaleString("fr")} triangles`);
-        }
-        this.ui.done("estimate", p.content !== "none" ? `Estimation : ${this.estimate} tuiles` : "Estimation terminée");
-        return;
-      }
       const lidar = [];
       for (const prod of products) {
         const t = await LIDAR.tile(this.fetcher, p, this.frame, prod, this.ui);
         if (t) lidar.push(t);
       }
-      if (!tiles.length && !lidar.length) throw new Error("Rien n'a été exporté.");
+      if (!tiles.length && !lidar.length) throw new Error(this.estimateOnly ? "Rien à prévisualiser." : "Rien n'a été exporté.");
+      if (this.estimateOnly) {
+        this.ui.progress("Aperçu 3D", 0, 0);
+        await sleep(0, this.abort.signal);
+        const shown = [
+          ...tiles.map((t) => ({ ...t, uv: t.uv && this.withTex ? previewUv(t.uv, p.flipV) : null, texture: this.withTex ? t.texture : null })),
+          ...lidar.map((t) => ({ ...t, color: t.name === "lidar_mnt" ? 0x7d9468 : 0x9ea4ad })),
+        ];
+        const tris = this.ui.preview(shown);
+        const what = p.content !== "none" ? `${this.estimate} tuiles à télécharger` : "LiDAR";
+        this.ui.log("OK", `Aperçu : ${tris.toLocaleString("fr")} triangles affichés — ${what}. Clic gauche : tourner, droit : déplacer, molette : zoom`);
+        this.ui.done("estimate", "Aperçu prêt");
+        return;
+      }
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
       const files = tiles.length ? EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV) : [];
@@ -308,7 +329,9 @@ class Job {
     this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
     if (this.estimateOnly) {
       this.estimate = todo.size;
-      return [];
+      const prev = Job.previewSubset(candidates, todo, excl, CONFIG.previewMaxTiles);
+      if (prev.level) this.ui.log("INFO", `Aperçu allégé : ${prev.todo.size} tuiles (niveau ${prev.level} au plus) ; le téléchargement prendra la meilleure définition`);
+      return this.download(prev.todo, prev.excl);
     }
     let tiles = await this.download(todo, excl);
     if (p.merge) {
@@ -319,6 +342,13 @@ class Job {
     }
     return tiles;
   }
+}
+
+// UV pour three.js (convention OpenGL, comme l'OBJ)
+function previewUv(uv, flipV) {
+  const out = new Float32Array(uv.length);
+  for (let i = 0; i < uv.length; i += 2) { out[i] = uv[i]; out[i + 1] = uvForObj(uv[i + 1], flipV); }
+  return out;
 }
 
 function saveBlob(blob, filename) {
@@ -333,34 +363,14 @@ function saveBlob(blob, filename) {
 
 // ---------------------------------------------------------------- interface
 const $ = (id) => document.getElementById(id);
-const LEVELS = { 15: "~2 m", 16: "~1 m", 17: "~50 cm", 18: "~25 cm", 19: "~12 cm", 20: "~6 cm", 21: "~3 cm" };
 const START = [48.8584, 2.2945];
 
 const map = L.map("map").setView(START, 16);
-for (const [lvl, res] of Object.entries(LEVELS)) $("level").add(new Option(`Niveau ${lvl} — ${res}/px`, lvl, false, lvl === "18"));
 
-// Fonds de carte. Les serveurs OpenStreetMap refusent les pages ouvertes en file:// et certains
-// fournisseurs demandent une cle : plusieurs choix, le dernier utilise est memorise.
-const OSM_ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
-const baseLayers = {
-  "Google Satellite": L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", {
-    maxZoom: 21, subdomains: "0123", attribution: "Imagerie &copy; Google",
-  }),
-  "Google Plan": L.tileLayer("https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", {
-    maxZoom: 21, subdomains: "0123", attribution: "Carte &copy; Google",
-  }),
-  "Esri Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 19, attribution: "Imagerie &copy; Esri",
-  }),
-  "CARTO Plan": L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-    maxZoom: 20, subdomains: "abcd", attribution: `${OSM_ATTR} &copy; CARTO`,
-  }),
-};
-let savedLayer = null;
-try { savedLayer = localStorage.getItem("earthImporter.layer"); } catch (e) { /* stockage indisponible */ }
-(baseLayers[savedLayer] || baseLayers["Google Satellite"]).addTo(map);
-L.control.layers(baseLayers, null, { collapsed: false, position: "topright" }).addTo(map);
-map.on("baselayerchange", (e) => { try { localStorage.setItem("earthImporter.layer", e.name); } catch (err) { /* idem */ } });
+// Fond de carte unique : Google Satellite (meme imagerie que les textures de la 3D)
+L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", {
+  maxZoom: 21, subdomains: "0123", attribution: "Imagerie &copy; Google",
+}).addTo(map);
 
 // ---- zone carree : centre + cote en metres
 const MAX_SIDE = 10000;
@@ -395,11 +405,6 @@ function parseCoords(text) {
   return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? [lat, lon] : null;
 }
 
-function goToCoords() {
-  const c = parseCoords($("coords").value);
-  if (!c) { $("coords").classList.add("bad"); ui.log("ERROR", "Coordonnées invalides (format : 48.8584, 2.2945)"); return; }
-  setZone(c[0], c[1], zone.side, true);
-}
 
 // ---- dessin a la main : bouton "Dessiner", puis cliquer-glisser d'un coin a l'autre (toujours un carre)
 let drawMode = false, drawStart = null, justDrew = false;
@@ -439,8 +444,6 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && drawMode
 map.on("click", (e) => { if (!drawMode && !justDrew) setZone(e.latlng.lat, e.latlng.lng); });
 marker.on("drag", (e) => setZone(e.latlng.lat, e.latlng.lng));
 $("draw").onclick = () => setDrawMode(!drawMode);
-$("go").onclick = goToCoords;
-$("coords").addEventListener("keydown", (e) => { if (e.key === "Enter") goToCoords(); });
 $("side").addEventListener("input", () => {
   const v = parseFloat($("side").value);
   if (v > 0) { zone.side = Math.min(MAX_SIDE, v); square.setBounds(squareBounds(zone.lat, zone.lon, zone.side)); }
@@ -470,6 +473,12 @@ const ui = {
       $("ptext").textContent = done ? `${phase} (${done})` : phase;
     }
   },
+  preview(tiles) {
+    showView("3d");
+    const tris = Preview.show($("viewer"), tiles);
+    $("tab-3d").disabled = false;
+    return tris;
+  },
   done(state, text) {
     setRunning(false);
     $("fill").classList.remove("indeterminate");
@@ -479,8 +488,30 @@ const ui = {
   },
 };
 
+// ---- lieu : nom (recherche) ou coordonnees
+setupPlaceSearch({
+  input: $("coords"), button: $("go"), list: $("places"), parseCoords, log: (lv, msg) => ui.log(lv, msg),
+  onPick(lat, lon, place) {
+    const label = $("coords").value;
+    setZone(lat, lon, zone.side, true);
+    if (place) $("coords").value = label;  // garder le nom tape ; les coordonnees sont dans le log
+    showView("map");
+  },
+});
+
+// ---- carte / apercu 3D
+function showView(which) {
+  $("map").hidden = which !== "map";
+  $("viewer").hidden = which !== "3d";
+  $("tab-map").classList.toggle("active", which === "map");
+  $("tab-3d").classList.toggle("active", which === "3d");
+  if (which === "map") map.invalidateSize();
+}
+$("tab-map").onclick = () => showView("map");
+$("tab-3d").onclick = () => showView("3d");
+
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -488,11 +519,12 @@ function setRunning(running) {
 
 let current = null;
 function launch(estimateOnly) {
-  const c = parseCoords($("coords").value);
-  const side = parseFloat($("side").value), level = parseInt($("level").value, 10);
-  if (!c) return ui.log("ERROR", "Coordonnées invalides");
+  const typed = parseCoords($("coords").value);  // coordonnees tapees sans Entree
+  if (typed && (typed[0] !== zone.lat || typed[1] !== zone.lon)) setZone(typed[0], typed[1]);
+  const c = [zone.lat, zone.lon];
+  const side = parseFloat($("side").value), level = CONFIG.maxLevel;
   if (!(side >= 2 && side <= MAX_SIDE)) return ui.log("ERROR", `Côté du carré entre 2 et ${MAX_SIDE} m`);
-  let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
+  let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,

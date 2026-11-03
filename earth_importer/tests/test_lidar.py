@@ -105,7 +105,8 @@ def test_lidar_estimate_and_laz(ign, tmp_path):
     msgs = [d["msg"] for k, d in events if k == "log"]
     assert any("grille" in m and "1 m" in m for m in msgs)
     assert any("1 dalle(s) LAZ" in m for m in msgs)
-    assert not any("/wms" in r for r in ign.requests)  # l'estimation ne telecharge pas les grilles
+    assert any(k == "preview" for k, _ in events)       # apercu 3D du MNS
+    assert not (tmp_path / "t" / "lidar_laz").exists()   # Tester ne telecharge pas les dalles LAZ
 
     events = []
     make_job(ign, tmp_path, events, laz=True).run()

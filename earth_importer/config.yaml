@@ -21,6 +21,10 @@ texture_formats: [1, 6]
 # Passe a false seulement si les textures sortent a l'envers.
 flip_v: true
 
+# Bouton Tester : au-dela de ce nombre de tuiles, l'apercu 3D descend d'un ou plusieurs niveaux
+# (le telechargement prend toujours la meilleure definition disponible)
+preview_max_tiles: 400
+
 # Blender pour les exports ABC/USD (vide = detection automatique)
 blender_path: ""
 
