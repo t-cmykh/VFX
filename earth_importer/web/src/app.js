@@ -282,12 +282,13 @@ class Job {
         await this.alignLidar(tiles, lidar, products);
         lidar.splice(0, lidar.length, ...lidar.filter(Boolean));
       }
+      if (lidar.length && p.lidarTex) await this.textureLidar(tiles, lidar);
       if (this.estimateOnly) {
         this.ui.progress("Aperçu 3D", 0, 0);
         await sleep(0, this.abort.signal);
         const shown = [
           ...tiles.map((t) => ({ ...t, uv: t.uv && this.withTex ? previewUv(t.uv, p.flipV) : null, texture: this.withTex ? t.texture : null })),
-          ...lidar,
+          ...lidar.map((t) => ({ ...t, uv: t.uv ? previewUv(t.uv, p.flipV) : null })),
         ];
         const tris = this.ui.preview(shown);
         const what = p.content !== "none" ? `${this.estimate} tuiles à télécharger` : "LiDAR";
@@ -302,7 +303,8 @@ class Job {
       // un fichier par produit LiDAR, dans le meme dossier que la 3D Google
       for (const t of lidar) {
         const lname = `${p.name}_${t.name}`;
-        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, false, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, !!t.texture, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+        if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
       }
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
@@ -356,6 +358,22 @@ class Job {
     for (const t of lidar) if (t) ALIGN.apply(t, sol);
     const f = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(1)} m`;
     ui.log("INFO", `LiDAR calé sur Google : Est ${f(sol.dE)}, Nord ${f(sol.dN)}, hauteur ${f(sol.dH)} (corrélation ${sol.score.toFixed(2)})`);
+  }
+
+  // Texture des maillages LiDAR : vue de dessus de la 3D Google texturee, projetee verticalement
+  async textureLidar(tiles, lidar) {
+    const p = this.p, ui = this.ui;
+    if (!tiles.some((t) => t.uv && t.texture)) {
+      ui.log("WARN", "Texture LiDAR : pas de texture Google (choisir Contenu = Géométrie + textures)");
+      return;
+    }
+    await sleep(0, this.abort.signal);
+    const res = await BAKE.topView(tiles, p.half, p.lidarTex, p.flipV, ui);
+    if (!res) return;
+    for (const t of lidar) { t.uv = BAKE.planarUv(t, p.half, p.flipV); t.texture = res.jpeg; }
+    const cm = (100 * p.side / res.size).toFixed(0);
+    ui.log("INFO", `Texture LiDAR : vue de dessus Google ${res.size} x ${res.size} px (~${cm} cm/px), ${(res.jpeg.length / 1e6).toFixed(1)} Mo`);
+    if (res.size < p.lidarTex) ui.log("WARN", `Taille de texture limitée à ${res.size} px par cet appareil`);
   }
 
   // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
@@ -554,7 +572,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align", "lidartex"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -571,7 +589,8 @@ function launch(estimateOnly) {
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked };
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked,
+              lidarTex: parseInt($("lidartex").value, 10) };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
@@ -586,6 +605,7 @@ function syncAtlas() {
   $("merge").disabled = $("content").value === "none";
   $("lidarres").disabled = $("lidar").value === "none";
   $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
+  $("lidartex").disabled = $("lidar").value === "none" || $("content").value !== "geo_tex";
 }
 $("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);

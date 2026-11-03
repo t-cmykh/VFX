@@ -309,3 +309,32 @@ def test_place_search(page):
     page.fill("#coords", "48.1, 2.2")
     page.press("#coords", "Enter")
     assert page.evaluate("marker.getLatLng().lat") == 48.1
+
+
+@pytest.mark.parametrize("flip_v", [True, False])
+def test_lidar_texture_orientation(page, flip_v):
+    """Texture LiDAR : une tuile Google rouge seulement au Nord-Est -> le sommet LiDAR Nord-Est lit du rouge,
+    le sommet Sud-Ouest lit le fond gris (vue de dessus, UV de projection verticale, conventions des exporteurs)."""
+    page.goto((ROOT / "EarthImporter.html").as_uri())
+    res = page.evaluate("""async (flipV) => {
+        const c = document.createElement('canvas'); c.width = c.height = 16;
+        const x = c.getContext('2d'); x.fillStyle = '#ff0000'; x.fillRect(0, 0, 16, 16);
+        const jpeg = new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/jpeg', 0.95))).arrayBuffer());
+        // quad Google : Est 10..90, Nord 10..90, a 20 m de haut (Y en haut, -Z = Nord), UV rocktree
+        const pos = [10, 20, -10, 90, 20, -10, 90, 20, -90, 10, 20, -90];
+        const uv = [0, 0, 1, 0, 1, 1, 0, 1];
+        const google = { name: 'g', pos: Float64Array.from(pos), faces: Uint32Array.from([0, 1, 2, 0, 2, 3]), uv: Float64Array.from(uv), texture: jpeg };
+        const out = await BAKE.topView([google], 100, 512, flipV, { progress() {} });
+        // sommets LiDAR : Nord-Est (50, 50) et Sud-Ouest (-50, -50)
+        const lid = { pos: Float64Array.from([50, 0, -50, -50, 0, 50]) };
+        const uvL = BAKE.planarUv(lid, 100, flipV);
+        // lecture comme un logiciel 3D : V OpenGL (bas = 0) apres uvForObj
+        const img = new Image(); img.src = URL.createObjectURL(new Blob([out.jpeg], { type: 'image/jpeg' })); await img.decode();
+        const cv = document.createElement('canvas'); cv.width = cv.height = out.size;
+        const g = cv.getContext('2d'); g.drawImage(img, 0, 0);
+        const read = (k) => { const u = uvL[2 * k], v = uvForObj(uvL[2 * k + 1], flipV);
+            return Array.from(g.getImageData(Math.floor(u * out.size), Math.floor((1 - v) * out.size), 1, 1).data.slice(0, 3)); };
+        return { ne: read(0), sw: read(1) };
+    }""", flip_v)
+    assert res["ne"][0] > 200 and res["ne"][1] < 60, res
+    assert all(abs(c - 128) < 20 for c in res["sw"]), res
