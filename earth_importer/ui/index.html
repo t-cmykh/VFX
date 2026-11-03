@@ -28,7 +28,27 @@
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
+      <option value="none">Rien (LiDAR seul)</option>
     </select>
+  </label>
+  <label title="LiDAR HD de l'IGN (France) : maillage dans le même repère que la 3D Google">LiDAR IGN
+    <select id="lidar">
+      <option value="none">Aucun</option>
+      <option value="mns">MNS (surface)</option>
+      <option value="mnt">MNT (sol nu)</option>
+      <option value="both">MNS + MNT</option>
+    </select>
+  </label>
+  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
+    <select id="lidarres">
+      <option value="0.5">0,5 m</option>
+      <option value="1" selected>1 m</option>
+      <option value="2">2 m</option>
+      <option value="5">5 m</option>
+    </select>
+  </label>
+  <label title="Dalles brutes du nuage de points LiDAR HD (1 km², 0,5 à 2 Go chacune, Lambert-93)">Nuage
+    <span class="check"><input id="laz" type="checkbox"> Dalles LAZ</span>
   </label>
   <label class="grow">Dossier de sortie
     <span class="row"><input id="outdir"><button id="pick" hidden title="Choisir un dossier">📁</button></span>

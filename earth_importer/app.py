@@ -67,6 +67,9 @@ class Request(BaseModel):
     fmt: str = "obj"
     out_dir: str = ""
     name: str = ""
+    lidar: str = "none"
+    lidar_res: float = 1.0
+    laz: bool = False
 
 
 def start(req, estimate_only):

@@ -27,3 +27,22 @@ blender_path: ""
 # Interface
 host: 127.0.0.1            # jamais 0.0.0.0 : outil local uniquement
 port: 8757
+
+# LiDAR HD de l'IGN (France uniquement, donnees libres - Geoplateforme)
+lidar:
+  wms: https://data.geopf.fr/wms-r/wms
+  layers:
+    mns: IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93   # surface : sol + batiments + arbres
+    mnt: IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93   # sol nu
+  mnt_fallback: ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES               # RGE ALTI 1 m si pas de MNT LiDAR HD
+  # image/x-bil;bits=32 en WMS 1.3.0 : la premiere ligne serait le bord SUD. Si le relief sort
+  # inverse Nord/Sud (bosses et creux echanges de cote), passer a false.
+  bil_south_first: true
+  max_px: 2048               # taille max d'une requete WMS (la zone est decoupee en blocs)
+  valid_range: [-500, 5000]  # altitudes hors de cet intervalle = pas de donnee
+  z_offset: 0.0              # decalage vertical (m) ajoute au LiDAR pour le caler sur la 3D Google
+  max_vertices: 25000000
+  min_interval: 0.2          # le service limite a ~5 requetes/s
+  # Index des dalles du nuage de points (LAZ/COPC 1 km x 1 km)
+  wfs: https://data.geopf.fr/wfs/ows
+  laz_typename: "IGNF_LIDAR-HD_TA:nuage-dalle"

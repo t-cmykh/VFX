@@ -736,6 +736,8 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
   body { grid-template-rows: auto minmax(260px, 1fr) auto auto 150px; }
   #ptext { min-width: 0; }
 }
+.check { display: flex; align-items: center; gap: 6px; min-height: 34px; color: var(--text); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.check input { min-height: 0; margin: 0; }
 
 </style>
 <style>
@@ -757,8 +759,6 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
 #draw.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .leaflet-container.drawing, .leaflet-container.drawing .leaflet-interactive { cursor: crosshair; }
 #level { min-width: 190px; }
-.check { display: flex; align-items: center; gap: 6px; min-height: 34px; color: var(--text); font-size: 13px; text-transform: none; letter-spacing: 0; }
-.check input { min-height: 0; margin: 0; }
 
 </style>
 </head>
@@ -784,6 +784,23 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
+      <option value="none">Rien (LiDAR seul)</option>
+    </select>
+  </label>
+  <label title="LiDAR HD de l'IGN (France) : maillage dans le même repère que la 3D Google">LiDAR IGN
+    <select id="lidar">
+      <option value="none">Aucun</option>
+      <option value="mns">MNS (surface)</option>
+      <option value="mnt">MNT (sol nu)</option>
+      <option value="both">MNS + MNT</option>
+    </select>
+  </label>
+  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
+    <select id="lidarres">
+      <option value="0.5">0,5 m</option>
+      <option value="1" selected>1 m</option>
+      <option value="2">2 m</option>
+      <option value="5">5 m</option>
     </select>
   </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
@@ -1102,6 +1119,171 @@ const GEO = {
 };
 
 if (typeof module !== "undefined") module.exports = { Msg, RT, GEO, readVarint };
+
+</script>
+<script>
+"use strict";
+// LiDAR HD de l'IGN (France) : MNS / MNT lus sur le WMS raster de la Geoplateforme (float32, Lambert-93),
+// mailles en grille et places dans le meme repere local que la 3D Google. Meme logique que core/lidar.py.
+// (Les dalles brutes du nuage de points, 0,5 a 2 Go chacune, ne sont que dans la version Python.)
+
+const LIDAR_CONFIG = {
+  wms: "https://data.geopf.fr/wms-r/wms",
+  layers: {
+    mns: "IGNF_LIDAR-HD_MNS_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
+    mnt: "IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.LAMB93",
+  },
+  mntFallback: "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",  // RGE ALTI 1 m
+  bilSouthFirst: true,   // WMS 1.3.0 x-bil : premiere ligne = bord sud (false si le relief sort inverse N/S)
+  maxPx: 2048,
+  validRange: [-500, 5000],
+  zOffset: 0,
+  maxVertices: 16e6,
+};
+const ignBase = typeof location !== "undefined" ? new URLSearchParams(location.search).get("ign") : null;  // tests : faux services IGN
+if (ignBase) LIDAR_CONFIG.wms = ignBase + "/wms";
+
+const L93 = { e: 0.0818191910428158, n: 0.7256077650532670, c: 11754255.426096, xs: 700000, ys: 12655612.049876, lon0: 3 * Math.PI / 180 };
+
+function lonlatToL93(lon, lat) {
+  const la = lat * Math.PI / 180, es = L93.e * Math.sin(la);
+  const iso = Math.log(Math.tan(Math.PI / 4 + la / 2) * ((1 - es) / (1 + es)) ** (L93.e / 2));
+  const r = L93.c * Math.exp(-L93.n * iso), t = L93.n * (lon * Math.PI / 180 - L93.lon0);
+  return [L93.xs + r * Math.sin(t), L93.ys - r * Math.cos(t)];
+}
+
+function l93ToLonlat(x, y) {
+  const dx = x - L93.xs, dy = L93.ys - y;
+  const iso = -Math.log(Math.hypot(dx, dy) / L93.c) / L93.n;
+  let phi = 2 * Math.atan(Math.exp(iso)) - Math.PI / 2;
+  for (let k = 0; k < 12; k++) {
+    const es = L93.e * Math.sin(phi);
+    phi = 2 * Math.atan(((1 + es) / (1 - es)) ** (L93.e / 2) * Math.exp(iso)) - Math.PI / 2;
+  }
+  return [(L93.lon0 + Math.atan2(dx, dy) / L93.n) * 180 / Math.PI, phi * 180 / Math.PI];
+}
+
+const LIDAR = {
+  products(choice) { return { mns: ["mns"], mnt: ["mnt"], both: ["mns", "mnt"] }[choice] || []; },
+
+  // rectangle Lambert-93 cale sur la grille, qui couvre le carre de cote 2 * half
+  bbox(p, res) {
+    const R = GEO.RADIUS, h = p.half * 1.02 + 2 * res;
+    const dlat = h / R * 180 / Math.PI, dlon = h / (R * Math.cos(p.lat * Math.PI / 180)) * 180 / Math.PI;
+    const xs = [], ys = [];
+    for (const [lo, la] of [[-1, -1], [1, -1], [-1, 1], [1, 1], [0, -1], [0, 1]]) {
+      const [x, y] = lonlatToL93(p.lon + lo * dlon, p.lat + la * dlat);
+      xs.push(x); ys.push(y);
+    }
+    return [Math.floor(Math.min(...xs) / res) * res, Math.floor(Math.min(...ys) / res) * res,
+            Math.ceil(Math.max(...xs) / res) * res, Math.ceil(Math.max(...ys) / res) * res];
+  },
+
+  shape(p, res) {
+    const [x0, y0, x1, y1] = LIDAR.bbox(p, res);
+    return [Math.round((y1 - y0) / res), Math.round((x1 - x0) / res)];
+  },
+
+  checkSize(p) {
+    const [h, w] = LIDAR.shape(p, p.lidarRes);
+    if (h * w > LIDAR_CONFIG.maxVertices)
+      throw new Error(`Zone trop grande pour un pas LiDAR de ${p.lidarRes} m (${w} x ${h} points) : augmente le pas ou réduis la zone`);
+    return [h, w];
+  },
+
+  wmsUrl(layer, x0, y0, x1, y1, w, h) {
+    return `${LIDAR_CONFIG.wms}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=${layer}&STYLES=` +
+      `&CRS=EPSG:2154&BBOX=${x0.toFixed(3)},${y0.toFixed(3)},${x1.toFixed(3)},${y1.toFixed(3)}` +
+      `&WIDTH=${w}&HEIGHT=${h}&FORMAT=image/x-bil%3Bbits%3D32`;
+  },
+
+  // grille d'altitude (lignes du nord vers le sud), NaN hors donnees
+  async fetchGrid(fetcher, p, layer, res, label, ui) {
+    const [x0, y0, x1, y1] = LIDAR.bbox(p, res);
+    const H = Math.round((y1 - y0) / res), W = Math.round((x1 - x0) / res), step = LIDAR_CONFIG.maxPx;
+    const grid = new Float32Array(H * W).fill(NaN);
+    const [lo, hi] = LIDAR_CONFIG.validRange;
+    const blocks = [];
+    for (let r = 0; r < H; r += step) for (let c = 0; c < W; c += step) blocks.push([r, c]);
+    let done = 0;
+    for (const [r, c] of blocks) {
+      const h = Math.min(step, H - r), w = Math.min(step, W - c), bx0 = x0 + c * res, by1 = y1 - r * res;
+      const data = await fetcher.get(LIDAR.wmsUrl(layer, bx0, by1 - h * res, bx0 + w * res, by1, w, h));
+      if (data.length !== w * h * 4) {
+        const text = new TextDecoder().decode(data.slice(0, 300)).replace(/<[^>]+>/g, " ").trim().slice(0, 200);
+        throw new Error(`Réponse IGN inattendue pour ${layer} (${data.length} octets au lieu de ${w * h * 4}) : ${text}`);
+      }
+      const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+      for (let j = 0; j < h; j++) {
+        const src = LIDAR_CONFIG.bilSouthFirst ? h - 1 - j : j;
+        for (let i = 0; i < w; i++) {
+          const z = view.getFloat32(4 * (src * w + i), true);
+          if (z >= lo && z <= hi) grid[(r + j) * W + c + i] = z;
+        }
+      }
+      ui.progress(`LiDAR ${label}`, ++done, blocks.length);
+    }
+    return { grid, W, H, x0, y1, res };
+  },
+
+  // tuile au format des exporteurs (Y en haut, X = Est, -Z = Nord), ou null sans donnees
+  async tile(fetcher, p, frame, prod, ui) {
+    let g = await LIDAR.fetchGrid(fetcher, p, LIDAR_CONFIG.layers[prod], p.lidarRes, prod.toUpperCase(), ui);
+    const hasData = (gr) => gr.grid.some((z) => !Number.isNaN(z));
+    if (!hasData(g) && prod === "mnt" && LIDAR_CONFIG.mntFallback) {
+      const res = Math.max(p.lidarRes, 1);
+      ui.log("WARN", `Pas de MNT LiDAR HD ici : repli sur le RGE ALTI (${res} m)`);
+      g = await LIDAR.fetchGrid(fetcher, p, LIDAR_CONFIG.mntFallback, res, "RGE ALTI", ui);
+    }
+    if (!hasData(g)) {
+      ui.log("WARN", `Aucune donnée ${prod.toUpperCase()} LiDAR HD sur cette zone (hors France ou zone pas encore couverte)`);
+      return null;
+    }
+    const { grid, W, H, x0, y1, res } = g, n = W * H, R = GEO.RADIUS;
+    const enu = new Float64Array(3 * n), out = new Uint8Array(n);
+    const ecef = new Float64Array(3);
+    for (let j = 0; j < H; j++) {
+      const y = y1 - (j + 0.5) * res;
+      for (let i = 0; i < W; i++) {
+        const k = j * W + i, [lon, lat] = l93ToLonlat(x0 + (i + 0.5) * res, y);
+        const z = Number.isNaN(grid[k]) ? 0 : grid[k] + LIDAR_CONFIG.zOffset;
+        const la = lat * Math.PI / 180, lo = lon * Math.PI / 180, r = R + z;
+        ecef[0] = r * Math.cos(la) * Math.cos(lo); ecef[1] = r * Math.cos(la) * Math.sin(lo); ecef[2] = r * Math.sin(la);
+        const e = frame.toEnu(ecef);
+        enu[3 * k] = e[0]; enu[3 * k + 1] = e[1]; enu[3 * k + 2] = e[2];
+        out[k] = Math.max(Math.abs(e[0]), Math.abs(e[1])) > p.half ? 1 : 0;
+      }
+    }
+    // 2 triangles par cellule aux 4 coins valides ; retires s'ils sont entierement hors du carre
+    const ok = (k) => !Number.isNaN(grid[k]);
+    const keep = [];
+    for (let j = 0; j < H - 1; j++) for (let i = 0; i < W - 1; i++) {
+      const a = j * W + i, b = a + 1, c = a + W, d = c + 1;
+      if (!(ok(a) && ok(b) && ok(c) && ok(d))) continue;
+      if (!(out[a] && out[c] && out[b])) keep.push(a, c, b);
+      if (!(out[b] && out[c] && out[d])) keep.push(b, c, d);
+    }
+    if (!keep.length) return null;
+    const remap = new Int32Array(n).fill(-1);
+    let m = 0;
+    const faces = new Uint32Array(keep.length);
+    for (let t = 0; t < keep.length; t++) {
+      const v = keep[t];
+      if (remap[v] < 0) remap[v] = m++;
+      faces[t] = remap[v];
+    }
+    const pos = new Float64Array(3 * m);
+    for (let v = 0; v < n; v++) {
+      const d = remap[v];
+      if (d < 0) continue;
+      pos[3 * d] = enu[3 * v]; pos[3 * d + 1] = enu[3 * v + 2]; pos[3 * d + 2] = -enu[3 * v + 1];
+    }
+    ui.log("INFO", `LiDAR ${prod.toUpperCase()} : ${(faces.length / 3).toLocaleString("fr")} triangles`);
+    return { name: `lidar_${prod}`, label: `lidar_${prod}`, pos, faces, uv: null, texture: null };
+  },
+};
+
+if (typeof module !== "undefined") module.exports = { LIDAR, LIDAR_CONFIG, lonlatToL93, l93ToLonlat };
 
 </script>
 <script>
@@ -1566,7 +1748,7 @@ class Fetcher {
       this.signal.addEventListener("abort", onAbort);
       const timer = setTimeout(() => ctl.abort(), CONFIG.timeout);
       try {
-        const r = await fetch(CONFIG.baseUrl + resource, { signal: ctl.signal });
+        const r = await fetch(/^https?:/.test(resource) ? resource : CONFIG.baseUrl + resource, { signal: ctl.signal });
         if (r.ok) {
           const data = new Uint8Array(await r.arrayBuffer());
           this.bytes += data.length;
@@ -1583,12 +1765,17 @@ class Fetcher {
         clearTimeout(timer);
         this.signal.removeEventListener("abort", onAbort);
       }
-      if (attempt === CONFIG.maxRetries) throw new FetchError(`${err} sur ${resource.split("/")[0]} après ${attempt} essai(s)`);
-      this.log("WARN", `${err} sur ${resource.split("/")[0]}, nouvel essai dans ${backoff / 1000} s`);
+      if (attempt === CONFIG.maxRetries) throw new FetchError(`${err} sur ${shortName(resource)} après ${attempt} essai(s)`);
+      this.log("WARN", `${err} sur ${shortName(resource)}, nouvel essai dans ${backoff / 1000} s`);
       await sleep(backoff, this.signal);
       backoff = Math.min(backoff * 2, 16000);
     }
   }
+}
+
+// libelle court pour le log : nom de ressource Google, ou hote + chemin d'une URL complete
+function shortName(resource) {
+  return /^https?:/.test(resource) ? resource.replace(/^https?:\/\//, "").split("?")[0] : resource.split("/")[0];
 }
 
 function sleep(ms, signal) {
@@ -1762,30 +1949,35 @@ class Job {
     const t0 = performance.now(), p = this.p;
     try {
       this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - carré de ${p.side} m - niveau ${p.level}`);
-      const root = await this.healthCheck();
-      const candidates = await this.collect(root);
-      const excl = Job.exclusions(candidates.keys());
-      const todo = new Map([...candidates].filter(([path]) => excl.get(path).size < 8));
-      if (!todo.size) throw new Error("Aucune donnée 3D dans cette zone à ce niveau (essaie un niveau plus bas ou une autre zone).");
-      const levels = [...new Set([...todo.keys()].map((k) => k.length))].sort((a, b) => a - b);
-      const mpts = [...todo.values()].map((m) => m.mpt).filter((x) => x > 0);
-      const mpt = mpts.length ? Math.min(...mpts) : 0;
-      this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
+      this.frame = GEO.frame(p.lat, p.lon);
+      const products = LIDAR.products(p.lidar);
+      if (products.length) LIDAR.checkSize(p);
+      let tiles = [];
+      if (p.content !== "none") tiles = await this.google();
       if (this.estimateOnly) {
-        this.ui.done("estimate", `Estimation : ${todo.size} tuiles`);
+        if (products.length) {
+          const [h, w] = LIDAR.shape(p, p.lidarRes);
+          for (const prod of products)
+            this.ui.log("INFO", `LiDAR ${prod.toUpperCase()} : grille ${w} x ${h} au pas de ${p.lidarRes} m, ~${(2 * h * w).toLocaleString("fr")} triangles`);
+        }
+        this.ui.done("estimate", p.content !== "none" ? `Estimation : ${this.estimate} tuiles` : "Estimation terminée");
         return;
       }
-      let tiles = await this.download(todo, excl);
-      if (p.merge) {
-        this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
-        await sleep(0, this.abort.signal);
-        tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
-        this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+      const lidar = [];
+      for (const prod of products) {
+        const t = await LIDAR.tile(this.fetcher, p, this.frame, prod, this.ui);
+        if (t) lidar.push(t);
       }
+      if (!tiles.length && !lidar.length) throw new Error("Rien n'a été exporté.");
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
-      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
+      const files = tiles.length ? EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV) : [];
       if (this.withTex) for (const t of tiles) if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
+      // un fichier par produit LiDAR, dans le meme dossier que la 3D Google
+      for (const t of lidar) {
+        const lname = `${p.name}_${t.name}`;
+        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, false, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+      }
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
       this.ui.log("OK", `Export terminé : ${p.name}.zip (${(zip.size / 1e6).toFixed(1)} Mo, ${((performance.now() - t0) / 1000).toFixed(0)} s) — dossier Téléchargements`);
@@ -1799,6 +1991,32 @@ class Job {
         this.ui.done("error", "Erreur");
       }
     }
+  }
+
+  // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
+  async google() {
+    const p = this.p;
+    const root = await this.healthCheck();
+    const candidates = await this.collect(root);
+    const excl = Job.exclusions(candidates.keys());
+    const todo = new Map([...candidates].filter(([path]) => excl.get(path).size < 8));
+    if (!todo.size) throw new Error("Aucune donnée 3D dans cette zone à ce niveau (essaie un niveau plus bas ou une autre zone).");
+    const levels = [...new Set([...todo.keys()].map((k) => k.length))].sort((a, b) => a - b);
+    const mpts = [...todo.values()].map((m) => m.mpt).filter((x) => x > 0);
+    const mpt = mpts.length ? Math.min(...mpts) : 0;
+    this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
+    if (this.estimateOnly) {
+      this.estimate = todo.size;
+      return [];
+    }
+    let tiles = await this.download(todo, excl);
+    if (p.merge) {
+      this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
+      await sleep(0, this.abort.signal);
+      tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
+      this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+    }
+    return tiles;
   }
 }
 
@@ -1961,7 +2179,7 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -1976,7 +2194,9 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value };
+              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value) };
+  if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);
@@ -1987,7 +2207,10 @@ function launch(estimateOnly) {
 // l'atlas n'a de sens que si on fusionne avec les textures
 function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
+  $("merge").disabled = $("content").value === "none";
+  $("lidarres").disabled = $("lidar").value === "none";
 }
+$("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);
 $("content").addEventListener("change", syncAtlas);
 syncAtlas();
@@ -1998,6 +2221,7 @@ $("cancel").onclick = () => current && current.abort.abort();
 
 ui.log("INFO", "Version fichier local : rien à installer, le résultat arrive en .zip dans ton dossier Téléchargements.");
 if (location.protocol === "file:" || base) ui.log("INFO", `Source : ${CONFIG.baseUrl}`);
+if (ignBase) ui.log("INFO", `LiDAR : ${LIDAR_CONFIG.wms}`);
 
 </script>
 </body>

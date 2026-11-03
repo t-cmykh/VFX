@@ -87,6 +87,34 @@ dans les exports ABC/USD, Z-up (X = Est, Y = Nord). Une tuile = un objet.
 Les réponses brutes sont gardées dans `<dossier>/.earth_cache/` : relancer après une annulation ne
 retélécharge pas ce qui l'a déjà été. Supprimer ce dossier pour repartir de zéro.
 
+## LiDAR HD de l'IGN (France)
+
+En plus (ou à la place) de la 3D Google, l'outil peut récupérer le **LiDAR HD de l'IGN** sur la même
+zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniquement**.
+
+- **LiDAR IGN** : *MNS* (surface : sol + bâtiments + arbres), *MNT* (sol nu) ou les deux. Chacun
+  devient un maillage en grille (`<nom>_lidar_mns.obj`, `<nom>_lidar_mnt.obj`, ou ABC / USD / GLB
+  selon le format), dans **le même repère que la 3D Google** (même origine, mêmes axes) : les deux
+  se superposent directement dans le logiciel 3D. Pas de texture.
+- **Pas** : 0,5 m (résolution native), 1, 2 ou 5 m. Une zone de 400 m au pas de 0,5 m ≈ 1,3 M triangles.
+  **Estimer** annonce la taille de la grille.
+- Si le MNT LiDAR HD n'existe pas encore sur la zone, repli automatique sur le RGE ALTI (1 m).
+- **Contenu → Rien (LiDAR seul)** pour ne pas interroger Google.
+- **Dalles LAZ** (version Python seulement) : télécharge les dalles brutes du nuage de points
+  classifié (1 km × 1 km, **0,5 à 2 Go chacune**) dans `<nom>/lidar_laz/`. Elles restent en
+  Lambert-93 / altitudes IGN69 ; `origine_repere_local.txt` donne la translation et la rotation pour
+  les recaler sur les maillages. Les dalles déjà présentes ne sont pas retéléchargées.
+
+Sources : WMS raster de la Géoplateforme (`data.geopf.fr/wms-r`, grilles float32 en Lambert-93) et
+index WFS des dalles. URLs et noms de couches dans la section `lidar` de `config.yaml` (version
+Python) ou en haut de `web/src/lidar.js` (version fichier local).
+
+À vérifier au premier essai réel (l'environnement de développement n'avait pas accès à l'IGN) :
+- le **sens Nord/Sud** des grilles : si le relief sort inversé, passer `bil_south_first` à `false` ;
+- le **calage vertical** sur la 3D Google : le LiDAR est en altitude IGN69 ; s'il flotte ou s'enfonce
+  par rapport au maillage Google, régler `z_offset` (en mètres) ;
+- le nom de la couche WFS des dalles (`laz_typename`) si la case Dalles LAZ ne trouve rien.
+
 ## Ce que fait l'outil
 
 1. **Test de santé** : lit `PlanetoidMetadata` et le bloc racine. Si la réponse est illisible, le log
@@ -129,6 +157,6 @@ vérifier avec `python -m pytest tests -q`.
 ## Tests
 
 ```bash
-pip install pytest
+pip install pytest playwright   # playwright : tests de la version fichier local (optionnel)
 python -m pytest tests -q
 ```

@@ -15,6 +15,7 @@ import numpy as np
 from . import rocktree as rt
 from .fetch import Cancelled, Fetcher, FetchError
 from .geo import LocalFrame
+from .lidar import Lidar
 
 HERE = Path(__file__).resolve().parent.parent
 BLENDER_SCRIPT = HERE / "export" / "blender_export.py"
@@ -26,11 +27,14 @@ class Params:
     lon: float
     radius: float = 200.0
     level: int = 18
-    content: str = "geo_tex"   # "geo_tex" | "geo"
+    content: str = "geo_tex"   # "geo_tex" | "geo" | "none" (pas de 3D Google)
     fmt: str = "obj"           # "obj" | "abc" | "usd"
     out_dir: str = "."
     name: str = ""
     crop: bool = True
+    lidar: str = "none"        # LiDAR HD IGN maille : "none" | "mns" | "mnt" | "both"
+    lidar_res: float = 1.0     # pas de la grille LiDAR (m)
+    laz: bool = False          # dalles brutes du nuage de points LiDAR HD
 
     def validate(self):
         if not -90 <= self.lat <= 90 or not -180 <= self.lon <= 180:
@@ -39,8 +43,12 @@ class Params:
             raise ValueError("rayon entre 1 et 5000 m")
         if not 1 <= self.level <= 22:
             raise ValueError("niveau de detail entre 1 et 22")
-        if self.content not in ("geo_tex", "geo") or self.fmt not in ("obj", "abc", "usd"):
+        if self.content not in ("geo_tex", "geo", "none") or self.fmt not in ("obj", "abc", "usd"):
             raise ValueError("contenu ou format inconnu")
+        if self.lidar not in ("none", "mns", "mnt", "both") or self.lidar_res not in (0.5, 1, 2, 5):
+            raise ValueError("option LiDAR inconnue")
+        if self.content == "none" and self.lidar == "none" and not self.laz:
+            raise ValueError("rien a telecharger : choisis la 3D Google et/ou le LiDAR")
         if not self.name:
             self.name = f"earth_{self.lat:.5f}_{self.lon:.5f}_r{self.radius:.0f}_l{self.level}"
         self.name = re.sub(r"[^\w.\-]+", "_", self.name)
@@ -74,8 +82,8 @@ class Job:
         self.estimate_only = estimate_only
         self.cancel = threading.Event()
         self.out = Path(params.out_dir).expanduser() / params.name
-        cache = Path(params.out_dir).expanduser() / ".earth_cache"
-        self.fetcher = Fetcher(cfg, cache_dir=cache, cancel=self.cancel, log=self.log)
+        self.cache_dir = Path(params.out_dir).expanduser() / ".earth_cache"
+        self.fetcher = Fetcher(cfg, cache_dir=self.cache_dir, cancel=self.cancel, log=self.log)
         self.frame = LocalFrame(params.lat, params.lon)  # rayon reel lu au test de sante
         self.with_tex = params.content == "geo_tex"
 
@@ -175,34 +183,71 @@ class Job:
         try:
             self.p.validate()
             self.log("INFO", f"Zone {self.p.lat:.6f}, {self.p.lon:.6f} - rayon {self.p.radius:.0f} m - niveau {self.p.level}")
-            planetoid, root = self.health_check()
-            self.frame = LocalFrame(self.p.lat, self.p.lon, planetoid["radius"])
-            candidates = self.collect(root)
-            excl = self.exclusions(candidates)
-            todo = {p: m for p, m in candidates.items() if len(excl[p]) < 8}
-            if not todo:
-                raise RuntimeError("Aucune donnee 3D dans cette zone a ce niveau (essaie un niveau plus bas ou une autre zone).")
-            levels = sorted({len(p) for p in todo})
-            mpt = min((m.meters_per_texel for m in todo.values() if m.meters_per_texel), default=0)
-            self.log("INFO", f"{len(todo)} tuiles a telecharger (niveaux {levels[0]}-{levels[-1]}, ~{mpt:.2f} m/texel au plus fin)")
+            outputs = []
+            if self.p.content != "none":
+                final = self.run_google()
+                if final:
+                    outputs.append(final)
+            if self.p.lidar != "none" or self.p.laz:
+                outputs += self.run_lidar()
             if self.estimate_only:
-                self.emit("estimate", {"tiles": len(todo), "levels": levels})
                 self.emit("state", {"state": "finished"})
                 return
-            self.out.mkdir(parents=True, exist_ok=True)
-            obj_path = self.write_obj(todo, excl)
-            final = obj_path
-            if self.p.fmt != "obj":
-                final = self.blender_export(obj_path)
-            size = final.stat().st_size / 1e6
-            self.log("OK", f"Export termine : {final} ({size:.1f} Mo, {time.time() - t0:.0f} s)")
-            self.emit("state", {"state": "finished", "path": str(final)})
+            if not outputs:
+                raise RuntimeError("Rien n'a ete exporte.")
+            for final in outputs:
+                size = final.stat().st_size / 1e6
+                self.log("OK", f"Export termine : {final} ({size:.1f} Mo)")
+            self.log("OK", f"Termine en {time.time() - t0:.0f} s")
+            self.emit("state", {"state": "finished", "path": str(outputs[0])})
         except Cancelled:
-            self.log("WARN", "Operation annulee (les tuiles deja telechargees restent en cache)")
+            self.log("WARN", "Operation annulee (ce qui a deja ete telecharge reste en cache)")
             self.emit("state", {"state": "cancelled"})
         except Exception as e:  # tout doit finir dans le panneau de log
             self.log("ERROR", str(e) or e.__class__.__name__)
             self.emit("state", {"state": "error"})
+
+    def run_google(self):
+        planetoid, root = self.health_check()
+        self.frame = LocalFrame(self.p.lat, self.p.lon, planetoid["radius"])
+        candidates = self.collect(root)
+        excl = self.exclusions(candidates)
+        todo = {p: m for p, m in candidates.items() if len(excl[p]) < 8}
+        if not todo:
+            raise RuntimeError("Aucune donnee 3D dans cette zone a ce niveau (essaie un niveau plus bas ou une autre zone).")
+        levels = sorted({len(p) for p in todo})
+        mpt = min((m.meters_per_texel for m in todo.values() if m.meters_per_texel), default=0)
+        self.log("INFO", f"{len(todo)} tuiles a telecharger (niveaux {levels[0]}-{levels[-1]}, ~{mpt:.2f} m/texel au plus fin)")
+        if self.estimate_only:
+            self.emit("estimate", {"tiles": len(todo), "levels": levels})
+            return None
+        self.out.mkdir(parents=True, exist_ok=True)
+        obj_path = self.write_obj(todo, excl)
+        if self.p.fmt != "obj":
+            return self.blender_export(obj_path, self.with_tex)
+        return obj_path
+
+    def run_lidar(self):
+        """LiDAR HD IGN : MNS/MNT mailles dans le meme repere que Google, et/ou dalles LAZ brutes."""
+        lid = Lidar(self.cfg, self.p, self.frame, self.cache_dir, self.cancel, self.log, self.progress)
+        if self.estimate_only:
+            lid.estimate()
+            return []
+        outputs = []
+        self.out.mkdir(parents=True, exist_ok=True)
+        if lid.products():
+            lid.check_size()
+        for prod in lid.products():
+            obj_path = lid.write_obj(self.out, self.p.name, prod)
+            if obj_path is None:
+                continue
+            outputs.append(self.blender_export(obj_path, False) if self.p.fmt != "obj" else obj_path)
+        if self.p.laz:
+            laz = lid.download_laz(self.out)
+            if laz:
+                self.log("INFO", f"Dalles LAZ dans {laz[0].parent} (Lambert-93 : voir origine_repere_local.txt)")
+                outputs += laz
+        return outputs
 
     # ------------------------------------------------------------ OBJ
     def write_obj(self, todo, excl):
@@ -291,17 +336,17 @@ class Job:
         counts["tris"] += len(faces)
 
     # ------------------------------------------------------------ ABC / USD
-    def blender_export(self, obj_path):
+    def blender_export(self, obj_path, with_tex):
         blender = find_blender(self.cfg.get("blender_path", ""))
         if not blender:
             raise RuntimeError(f"Blender introuvable : l'OBJ est pret ({obj_path}). "
                                "Renseigne blender_path dans config.yaml pour l'export ABC/USD.")
         ext = {"abc": ".abc", "usd": ".usdc"}[self.p.fmt]
-        target = self.out / f"{self.p.name}{ext}"
+        target = obj_path.with_suffix(ext)
         self.progress("Export Blender", 0, 0)
         self.log("INFO", f"Export {self.p.fmt.upper()} via Blender ({blender})")
         cmd = [blender, "-b", "--factory-startup", "--python", str(BLENDER_SCRIPT), "--",
-               str(obj_path), str(target), self.p.fmt, "1" if self.with_tex else "0"]
+               str(obj_path), str(target), self.p.fmt, "1" if with_tex else "0"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                 errors="replace")
         tail = []
@@ -315,7 +360,7 @@ class Job:
                 raise Cancelled()
         if proc.wait() != 0 or not target.exists():
             raise RuntimeError("Echec de l'export Blender :\n" + "\n".join(tail))
-        if self.p.fmt == "usd" or not self.with_tex:
+        if self.p.fmt == "usd" or not with_tex:
             obj_path.unlink(missing_ok=True)
             (obj_path.with_suffix(".mtl")).unlink(missing_ok=True)
         return target

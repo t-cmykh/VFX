@@ -30,6 +30,23 @@
     <select id="content">
       <option value="geo_tex">Géométrie + textures</option>
       <option value="geo">Géométrie seule</option>
+      <option value="none">Rien (LiDAR seul)</option>
+    </select>
+  </label>
+  <label title="LiDAR HD de l'IGN (France) : maillage dans le même repère que la 3D Google">LiDAR IGN
+    <select id="lidar">
+      <option value="none">Aucun</option>
+      <option value="mns">MNS (surface)</option>
+      <option value="mnt">MNT (sol nu)</option>
+      <option value="both">MNS + MNT</option>
+    </select>
+  </label>
+  <label title="Pas de la grille LiDAR. 0,5 m = résolution native">Pas
+    <select id="lidarres">
+      <option value="0.5">0,5 m</option>
+      <option value="1" selected>1 m</option>
+      <option value="2">2 m</option>
+      <option value="5">5 m</option>
     </select>
   </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
@@ -75,6 +92,7 @@
 
 <!-- @inline-js ../../ui/vendor/leaflet/leaflet.js -->
 <!-- @inline-js rocktree.js -->
+<!-- @inline-js lidar.js -->
 <!-- @inline-js exporters.js -->
 <!-- @inline-js merge.js -->
 <!-- @inline-js app.js -->

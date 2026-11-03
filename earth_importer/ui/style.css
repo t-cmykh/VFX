@@ -65,3 +65,5 @@ button.primary:hover:not(:disabled) { background: #3b7cf0; }
   body { grid-template-rows: auto minmax(260px, 1fr) auto auto 150px; }
   #ptext { min-width: 0; }
 }
+.check { display: flex; align-items: center; gap: 6px; min-height: 34px; color: var(--text); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.check input { min-height: 0; margin: 0; }

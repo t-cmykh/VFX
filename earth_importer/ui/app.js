@@ -76,7 +76,8 @@ function progress(phase, done, total) {
 }
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "radius", "coords", "go", "outdir"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "radius", "coords", "go", "outdir", "lidar", "lidarres", "laz"]) $(id).disabled = running;
+  if (!running) syncLidar();
   $("cancel").disabled = !running;
 }
 
@@ -92,8 +93,17 @@ function params() {
     fmt: $("fmt").value,
     out_dir: $("outdir").value.trim(),
     name: $("name").value.trim(),
+    lidar: $("lidar").value,
+    lidar_res: parseFloat($("lidarres").value),
+    laz: $("laz").checked,
   };
 }
+
+function syncLidar() {
+  $("lidarres").disabled = $("lidar").value === "none";
+}
+$("lidar").addEventListener("change", syncLidar);
+syncLidar();
 
 async function post(url, body) {
   const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });

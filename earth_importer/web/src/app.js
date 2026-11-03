@@ -49,7 +49,7 @@ class Fetcher {
       this.signal.addEventListener("abort", onAbort);
       const timer = setTimeout(() => ctl.abort(), CONFIG.timeout);
       try {
-        const r = await fetch(CONFIG.baseUrl + resource, { signal: ctl.signal });
+        const r = await fetch(/^https?:/.test(resource) ? resource : CONFIG.baseUrl + resource, { signal: ctl.signal });
         if (r.ok) {
           const data = new Uint8Array(await r.arrayBuffer());
           this.bytes += data.length;
@@ -66,12 +66,17 @@ class Fetcher {
         clearTimeout(timer);
         this.signal.removeEventListener("abort", onAbort);
       }
-      if (attempt === CONFIG.maxRetries) throw new FetchError(`${err} sur ${resource.split("/")[0]} après ${attempt} essai(s)`);
-      this.log("WARN", `${err} sur ${resource.split("/")[0]}, nouvel essai dans ${backoff / 1000} s`);
+      if (attempt === CONFIG.maxRetries) throw new FetchError(`${err} sur ${shortName(resource)} après ${attempt} essai(s)`);
+      this.log("WARN", `${err} sur ${shortName(resource)}, nouvel essai dans ${backoff / 1000} s`);
       await sleep(backoff, this.signal);
       backoff = Math.min(backoff * 2, 16000);
     }
   }
+}
+
+// libelle court pour le log : nom de ressource Google, ou hote + chemin d'une URL complete
+function shortName(resource) {
+  return /^https?:/.test(resource) ? resource.replace(/^https?:\/\//, "").split("?")[0] : resource.split("/")[0];
 }
 
 function sleep(ms, signal) {
@@ -245,30 +250,35 @@ class Job {
     const t0 = performance.now(), p = this.p;
     try {
       this.ui.log("INFO", `Zone ${p.lat.toFixed(6)}, ${p.lon.toFixed(6)} - carré de ${p.side} m - niveau ${p.level}`);
-      const root = await this.healthCheck();
-      const candidates = await this.collect(root);
-      const excl = Job.exclusions(candidates.keys());
-      const todo = new Map([...candidates].filter(([path]) => excl.get(path).size < 8));
-      if (!todo.size) throw new Error("Aucune donnée 3D dans cette zone à ce niveau (essaie un niveau plus bas ou une autre zone).");
-      const levels = [...new Set([...todo.keys()].map((k) => k.length))].sort((a, b) => a - b);
-      const mpts = [...todo.values()].map((m) => m.mpt).filter((x) => x > 0);
-      const mpt = mpts.length ? Math.min(...mpts) : 0;
-      this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
+      this.frame = GEO.frame(p.lat, p.lon);
+      const products = LIDAR.products(p.lidar);
+      if (products.length) LIDAR.checkSize(p);
+      let tiles = [];
+      if (p.content !== "none") tiles = await this.google();
       if (this.estimateOnly) {
-        this.ui.done("estimate", `Estimation : ${todo.size} tuiles`);
+        if (products.length) {
+          const [h, w] = LIDAR.shape(p, p.lidarRes);
+          for (const prod of products)
+            this.ui.log("INFO", `LiDAR ${prod.toUpperCase()} : grille ${w} x ${h} au pas de ${p.lidarRes} m, ~${(2 * h * w).toLocaleString("fr")} triangles`);
+        }
+        this.ui.done("estimate", p.content !== "none" ? `Estimation : ${this.estimate} tuiles` : "Estimation terminée");
         return;
       }
-      let tiles = await this.download(todo, excl);
-      if (p.merge) {
-        this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
-        await sleep(0, this.abort.signal);
-        tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
-        this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+      const lidar = [];
+      for (const prod of products) {
+        const t = await LIDAR.tile(this.fetcher, p, this.frame, prod, this.ui);
+        if (t) lidar.push(t);
       }
+      if (!tiles.length && !lidar.length) throw new Error("Rien n'a été exporté.");
       this.ui.progress("Écriture de l'archive", 0, 0);
       await sleep(0, this.abort.signal);
-      const files = EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV);
+      const files = tiles.length ? EXPORTERS[p.fmt](tiles, p.name, p, this.withTex, p.flipV) : [];
       if (this.withTex) for (const t of tiles) if (t.texture) files.push([`${p.name}/textures/${t.name}.jpg`, t.texture]);
+      // un fichier par produit LiDAR, dans le meme dossier que la 3D Google
+      for (const t of lidar) {
+        const lname = `${p.name}_${t.name}`;
+        for (const [path, content] of EXPORTERS[p.fmt]([t], lname, p, false, p.flipV)) files.push([path.replace(`${lname}/`, `${p.name}/`), content]);
+      }
       const zip = makeZip(files);
       saveBlob(zip, `${p.name}.zip`);
       this.ui.log("OK", `Export terminé : ${p.name}.zip (${(zip.size / 1e6).toFixed(1)} Mo, ${((performance.now() - t0) / 1000).toFixed(0)} s) — dossier Téléchargements`);
@@ -282,6 +292,32 @@ class Job {
         this.ui.done("error", "Erreur");
       }
     }
+  }
+
+  // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
+  async google() {
+    const p = this.p;
+    const root = await this.healthCheck();
+    const candidates = await this.collect(root);
+    const excl = Job.exclusions(candidates.keys());
+    const todo = new Map([...candidates].filter(([path]) => excl.get(path).size < 8));
+    if (!todo.size) throw new Error("Aucune donnée 3D dans cette zone à ce niveau (essaie un niveau plus bas ou une autre zone).");
+    const levels = [...new Set([...todo.keys()].map((k) => k.length))].sort((a, b) => a - b);
+    const mpts = [...todo.values()].map((m) => m.mpt).filter((x) => x > 0);
+    const mpt = mpts.length ? Math.min(...mpts) : 0;
+    this.ui.log("INFO", `${todo.size} tuiles à télécharger (niveaux ${levels[0]}-${levels.at(-1)}, ~${mpt.toFixed(2)} m/texel au plus fin)`);
+    if (this.estimateOnly) {
+      this.estimate = todo.size;
+      return [];
+    }
+    let tiles = await this.download(todo, excl);
+    if (p.merge) {
+      this.ui.progress("Fusion des tuiles et de l'atlas", 0, 0);
+      await sleep(0, this.abort.signal);
+      tiles = [await mergeTiles(tiles, { withTex: this.withTex, flipV: p.flipV, resolution: p.atlas, log: this.ui.log })];
+      this.ui.log("INFO", `Fusion : 1 objet, ${(tiles[0].faces.length / 3).toLocaleString("fr")} triangles`);
+    }
+    return tiles;
   }
 }
 
@@ -444,7 +480,7 @@ const ui = {
 };
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "level", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -459,7 +495,9 @@ function launch(estimateOnly) {
   let name = $("name").value.trim() || `earth_${c[0].toFixed(5)}_${c[1].toFixed(5)}_c${side}_l${level}`;
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
-              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value };
+              flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value) };
+  if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
   ui.progress("Démarrage", 0, 0);
@@ -470,7 +508,10 @@ function launch(estimateOnly) {
 // l'atlas n'a de sens que si on fusionne avec les textures
 function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
+  $("merge").disabled = $("content").value === "none";
+  $("lidarres").disabled = $("lidar").value === "none";
 }
+$("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);
 $("content").addEventListener("change", syncAtlas);
 syncAtlas();
@@ -481,3 +522,4 @@ $("cancel").onclick = () => current && current.abort.abort();
 
 ui.log("INFO", "Version fichier local : rien à installer, le résultat arrive en .zip dans ton dossier Téléchargements.");
 if (location.protocol === "file:" || base) ui.log("INFO", `Source : ${CONFIG.baseUrl}`);
+if (ignBase) ui.log("INFO", `LiDAR : ${LIDAR_CONFIG.wms}`);

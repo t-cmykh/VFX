@@ -29,7 +29,8 @@ def page():
         try:
             browser = p.chromium.launch()
         except Exception:
-            exe = next(Path("/opt/pw-browsers").glob("chromium-*/chrome-linux/chrome"), None)
+            exe = next((x for pat in ("chromium-*/chrome-linux*/chrome", "chromium")
+                        for x in Path("/opt/pw-browsers").glob(pat) if x.is_file()), None)
             if exe is None:
                 pytest.skip("Chromium introuvable")
             browser = p.chromium.launch(executable_path=str(exe))
@@ -222,3 +223,34 @@ def test_web_frame_matches_reference_camera(page):
     page.goto((ROOT / "EarthImporter.html").as_uri())
     enu = page.evaluate("""() => Array.from(GEO.frame(40.7005, -74.0186).toEnu([1329866.230289, -4643494.267515, 4154677.131562]))""")
     assert abs(enu[0]) < 30 and abs(enu[1]) < 30 and abs(enu[2] - 169) < 5
+
+
+def test_web_lidar(page, tmp_path):
+    """LiDAR seul (faux services IGN) : meme placement et meme orientation que la version Python."""
+    import numpy as np
+    from tests import fake_ign as fi
+    ign = fi.FakeIgn()
+    try:
+        page.goto((ROOT / "EarthImporter.html").as_uri() + "?ign=" + ign.url)
+        page.select_option("#content", "none")
+        page.select_option("#lidar", "both")
+        page.select_option("#lidarres", "2")
+        page.fill("#side", "200")
+        page.press("#side", "Enter")
+        page.fill("#name", "t")
+        with page.expect_download(timeout=30000) as dl:
+            page.click("#download")
+        path = tmp_path / "t.zip"
+        dl.value.save_as(path)
+    finally:
+        ign.close()
+    z = zipfile.ZipFile(path)
+    assert set(z.namelist()) == {"t/t_lidar_mns.obj", "t/t_lidar_mnt.obj"}
+    lines = z.read("t/t_lidar_mns.obj").decode().splitlines()
+    v = np.array([[float(x) for x in l.split()[1:]] for l in lines if l.startswith("v ")])
+    north = -v[:, 2]
+    assert np.abs(v[:, [0, 2]]).max() < 105  # carre de 200 m
+    ground = np.abs(v[:, 0] + 60) < 40
+    assert abs(np.polyfit(north[ground], v[ground, 1], 1)[0] - 0.1) < 0.01
+    roof = (np.abs(v[:, 0] - 60) < 15) & (np.abs(north) < 15)
+    assert (v[roof, 1] - (100 + 0.1 * north[roof]) > 19).all()
