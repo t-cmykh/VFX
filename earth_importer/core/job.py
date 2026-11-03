@@ -17,6 +17,7 @@ from . import rocktree as rt
 from .fetch import Cancelled, Fetcher, FetchError
 from .geo import LocalFrame
 from . import align
+from .bake import TopViewBaker, planar_uv
 from .lidar import Lidar
 
 HERE = Path(__file__).resolve().parent.parent
@@ -38,6 +39,7 @@ class Params:
     lidar_res: float = 1.0     # pas de la grille LiDAR (m)
     laz: bool = False          # dalles brutes du nuage de points LiDAR HD
     align: bool = True         # cale le LiDAR sur la 3D Google (decalage Est/Nord/haut)
+    lidar_tex: int = 4096      # texture du LiDAR = vue de dessus de la 3D Google (px), 0 = aucune
 
     def validate(self):
         if not -90 <= self.lat <= 90 or not -180 <= self.lon <= 180:
@@ -48,7 +50,8 @@ class Params:
             raise ValueError("niveau de detail entre 1 et 22")
         if self.content not in ("geo_tex", "geo", "none") or self.fmt not in ("obj", "abc", "usd"):
             raise ValueError("contenu ou format inconnu")
-        if self.lidar not in ("none", "mns", "mnt", "both") or self.lidar_res not in (0.5, 1, 2, 5):
+        if self.lidar not in ("none", "mns", "mnt", "both") or self.lidar_res not in (0.5, 1, 2, 5) \
+                or self.lidar_tex not in (0, 2048, 4096, 8192):
             raise ValueError("option LiDAR inconnue")
         if self.content == "none" and self.lidar == "none" and not self.laz:
             raise ValueError("rien a telecharger : choisis la 3D Google et/ou le LiDAR")
@@ -92,6 +95,7 @@ class Job:
         self.preview = None         # apercu 3D empaquete (bouton Tester)
         self.preview_tiles = []
         self.ref_pts = []           # points de la 3D Google (Est, Nord, haut) pour caler le LiDAR
+        self.baker = None           # vue de dessus de la 3D Google, pour texturer le LiDAR
 
     # ------------------------------------------------------------ evenements
     def log(self, level, msg):
@@ -223,6 +227,11 @@ class Job:
         planetoid, root = self.health_check()
         self.frame = LocalFrame(self.p.lat, self.p.lon, planetoid["radius"])
         candidates = self.collect(root)
+        if self.p.lidar != "none" and self.p.lidar_tex:
+            if self.with_tex:
+                self.baker = TopViewBaker(self.p.radius, self.p.lidar_tex)
+            else:
+                self.log("WARN", "Texture LiDAR : pas de texture Google (choisir Contenu = Geometrie + textures)")
         excl = self.exclusions(candidates)
         todo = {p: m for p, m in candidates.items() if len(excl[p]) < 8}
         if not todo:
@@ -245,8 +254,11 @@ class Job:
             return self.blender_export(obj_path, self.with_tex)
         return obj_path
 
-    def keep_ref(self, v, faces):
-        """Garde des points de la 3D Google (Y en haut -> Est, Nord, haut) pour le calage du LiDAR."""
+    def keep_ref(self, v, faces, uv=None, tex=None):
+        """Garde des points de la 3D Google (Y en haut -> Est, Nord, haut) pour le calage du LiDAR,
+        et la rend dans la vue de dessus qui texture le LiDAR."""
+        if self.baker is not None and uv is not None and tex:
+            self.baker.add(v, faces, uv, tex)
         if self.p.align and self.p.lidar != "none":
             enu = np.stack([v[:, 0], -v[:, 2], v[:, 1]], axis=1)
             self.ref_pts.append(align.samples(enu, faces, min(self.p.radius, align.MAX_HALF)))
@@ -290,11 +302,28 @@ class Job:
         self.log("INFO", f"LiDAR cale sur Google : Est {sol['dE']:+.1f} m, Nord {sol['dN']:+.1f} m, "
                          f"hauteur {sol['dH']:+.1f} m (correlation {sol['score']:.2f})")
 
+    def bake_texture(self):
+        """JPEG de la vue de dessus Google pour texturer le LiDAR, ou None."""
+        if self.baker is None:
+            return None
+        self.progress("Texture LiDAR : vue de dessus Google", 0, 0)
+        t0 = time.time()
+        jpeg = self.baker.jpeg()
+        if jpeg is None:
+            self.log("WARN", "Texture LiDAR : aucune texture Google dans la zone")
+            return None
+        size = self.baker.size
+        self.log("INFO", f"Texture LiDAR : vue de dessus Google {size} x {size} px "
+                         f"(~{100 * 2 * self.p.radius / size:.0f} cm/px), {len(jpeg) / 1e6:.1f} Mo, "
+                         f"{time.time() - t0:.0f} s")
+        return jpeg
+
     def run_lidar(self):
         """LiDAR HD IGN : MNS/MNT mailles dans le meme repere que Google, et/ou dalles LAZ brutes."""
         lid = Lidar(self.cfg, self.p, self.frame, self.cache_dir, self.cancel, self.log, self.progress)
         if self.p.align and self.ref_pts and lid.products():
             self.align_lidar(lid)
+        texture = self.bake_texture() if lid.products() else None
         if self.estimate_only:
             lid.estimate()
             if lid.products():
@@ -304,17 +333,19 @@ class Job:
                 if res:
                     v, faces = res
                     self.preview_tiles.append({"name": f"lidar_{prod}", "faces": faces,
-                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1)})
+                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1),
+                                               "uv": planar_uv(v, lid.half) if texture else None,
+                                               "texture": texture})
             return []
         outputs = []
         self.out.mkdir(parents=True, exist_ok=True)
         if lid.products():
             lid.check_size()
         for prod in lid.products():
-            obj_path = lid.write_obj(self.out, self.p.name, prod)
+            obj_path = lid.write_obj(self.out, self.p.name, prod, texture)
             if obj_path is None:
                 continue
-            outputs.append(self.blender_export(obj_path, False) if self.p.fmt != "obj" else obj_path)
+            outputs.append(self.blender_export(obj_path, bool(texture)) if self.p.fmt != "obj" else obj_path)
         if self.p.laz:
             laz = lid.download_laz(self.out)
             if laz:
@@ -402,7 +433,7 @@ class Job:
         if res is None:
             return
         v, faces, uv, tex = res
-        self.keep_ref(v, faces)
+        self.keep_ref(v, faces, uv, tex)
         faces = faces + 1
         obj.write(f"o tile_{name}\n")
         np.savetxt(obj, v, fmt="v %.4f %.4f %.4f")
@@ -466,7 +497,7 @@ class Job:
                         res = self.mesh_arrays(node, mesh, excl[path], flip_v)
                         if res:
                             v, faces, uv, tex = res
-                            self.keep_ref(v, faces)
+                            self.keep_ref(v, faces, uv, tex)
                             tiles.append({"name": f"tile_{path}_{i}", "pos": v, "faces": faces,
                                           "uv": uv, "texture": tex or None})
                 done += 1

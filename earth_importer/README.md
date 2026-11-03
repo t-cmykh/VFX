@@ -16,7 +16,7 @@ Le décodage du format « rocktree » est porté en Python depuis
 
 ```bash
 cd earth_importer
-pip install -r requirements.txt
+pip install -r requirements.txt   # Pillow compris (texture du LiDAR)
 pip install pywebview          # optionnel : vraie fenêtre + sélecteur de dossier natif
 ```
 
@@ -113,13 +113,14 @@ zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniqu
   LiDAR (Est, Nord, hauteur) pour qu'ils se superposent. Il vérifie au passage le sens Nord/Sud des
   grilles IGN et le corrige si besoin. Le log donne le décalage trouvé et la corrélation (de 0 à 1) ;
   sous 0,3 le calage est jugé non fiable et le LiDAR reste à sa position géographique.
-- **Texture LiDAR** (version fichier local / site, avec Contenu = Géométrie + textures) : la 3D Google
+- **Texture LiDAR** (avec Contenu = Géométrie + textures) : la 3D Google
   texturée est rendue vue de dessus (2048, 4096 ou 8192 px sur toute la zone ; le log donne les cm/px)
   et projetée verticalement sur les maillages LiDAR, après le calage. Exportée en
   `textures/lidar_mns.jpg` (et `lidar_mnt.jpg`) avec les UV correspondantes. Limites : les façades
   verticales reçoivent une texture étirée (projection depuis le dessus) ; là où Google n'a pas de
-  données, fond gris ; certains téléphones plafonnent la taille (le log le signale). Pas encore dans
-  la version Python.
+  données, fond gris ; certains téléphones plafonnent la taille (le log le signale). Version Python :
+  rendu fait par le processeur (numpy + Pillow, `core/bake.py`), compter de l'ordre de 15 à 60 s en
+  4096 px selon la zone, environ 4 fois plus en 8192 px ; le log donne la durée.
 - Si le MNT LiDAR HD n'existe pas encore sur la zone, repli automatique sur le RGE ALTI (1 m).
 - **Contenu → Rien (LiDAR seul)** pour ne pas interroger Google.
 - **Dalles LAZ** (version Python seulement) : télécharge les dalles brutes du nuage de points

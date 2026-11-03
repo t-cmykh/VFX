@@ -3,5 +3,6 @@ uvicorn>=0.27
 requests>=2.31
 numpy>=1.24
 PyYAML>=6.0
+Pillow>=9.0                # texture du LiDAR (vue de dessus de la 3D Google)
 # optionnel : fenetre native au lieu du navigateur
 # pywebview>=5
