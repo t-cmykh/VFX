@@ -3,6 +3,14 @@
 // Une tuile : { name, pos: Float32Array|Float64Array (Y en haut, X = Est, -Z = Nord),
 //               faces: Uint32Array, uv: Float32Array|null (convention OpenGL, V deja corrige),
 //               texture: Uint8Array|null (JPEG), color: optionnel (tuiles sans texture) }
+// Couches (case a cocher en haut a droite de l'apercu) : tuiles "lidar_mns", "lidar_mnt", le reste = Google.
+
+const LAYERS = [
+  { key: "google", label: "Google 3D", color: 0x9ea4ad },
+  { key: "lidar_mns", label: "LiDAR MNS", color: 0xd9925b },
+  { key: "lidar_mnt", label: "LiDAR MNT", color: 0x6fae6a },
+];
+const layerOf = (t) => (t.name === "lidar_mns" || t.name === "lidar_mnt" ? t.name : "google");
 
 const Preview = (() => {
   let renderer = null, scene = null, camera = null, controls = null, container = null, root = null;
@@ -76,17 +84,47 @@ const Preview = (() => {
         mat = new THREE.MeshBasicMaterial({ map: texture(t.texture), side: THREE.DoubleSide });
       } else {
         g.computeVertexNormals();
-        mat = new THREE.MeshLambertMaterial({ color: t.color ?? 0x9ea4ad, side: THREE.DoubleSide });
+        const layer = LAYERS.find((l) => l.key === layerOf(t));
+        mat = new THREE.MeshLambertMaterial({ color: layer.color, side: THREE.DoubleSide });
       }
       const mesh = new THREE.Mesh(g, mat);
       mesh.name = t.label || t.name;
+      mesh.userData.layer = layerOf(t);
       root.add(mesh);
       tris += t.faces.length / 3;
     }
     scene.add(root);
+    legend(tiles);
     frameAll();
     if (!frame) loop();
     return tris;
+  }
+
+  // cases a cocher pour masquer / afficher chaque couche presente
+  function legend(tiles) {
+    let box = container.querySelector(".layers");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "layers";
+      container.append(box);
+    }
+    box.innerHTML = "";
+    const present = new Set(tiles.map(layerOf));
+    for (const l of LAYERS) {
+      if (!present.has(l.key)) continue;
+      const lab = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.dataset.layer = l.key;
+      cb.onchange = () => root.children.forEach((m) => { if (m.userData.layer === l.key) m.visible = cb.checked; });
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = `#${l.color.toString(16).padStart(6, "0")}`;
+      lab.append(cb, sw, document.createTextNode(l.label));
+      box.append(lab);
+    }
+    box.hidden = present.size < 2;
   }
 
   function frameAll() {

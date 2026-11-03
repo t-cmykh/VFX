@@ -762,6 +762,16 @@ label.place { position: relative; }
 .tabs button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
 .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+/* couches de l'apercu 3D */
+#viewer .layers {
+  position: absolute; top: 10px; right: 10px; z-index: 10; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px; background: rgba(30, 33, 38, .9); border: 1px solid var(--line); border-radius: 6px;
+}
+#viewer .layers[hidden] { display: none; }
+#viewer .layers label { flex-direction: row; align-items: center; gap: 6px; color: var(--text); font-size: 12px; text-transform: none; letter-spacing: 0; cursor: pointer; }
+#viewer .layers input { min-height: 0; margin: 0; }
+#viewer .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
 </style>
 <style>
 /* complements a ui/style.css pour la version fichier local */
@@ -829,6 +839,9 @@ label.place { position: relative; }
       <option value="2">2 m</option>
       <option value="5">5 m</option>
     </select>
+  </label>
+  <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
+    <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
   </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
     <select id="merge">
@@ -2107,6 +2120,14 @@ function setupPlaceSearch({ input, button, list, parseCoords, onPick, log }) {
 // Une tuile : { name, pos: Float32Array|Float64Array (Y en haut, X = Est, -Z = Nord),
 //               faces: Uint32Array, uv: Float32Array|null (convention OpenGL, V deja corrige),
 //               texture: Uint8Array|null (JPEG), color: optionnel (tuiles sans texture) }
+// Couches (case a cocher en haut a droite de l'apercu) : tuiles "lidar_mns", "lidar_mnt", le reste = Google.
+
+const LAYERS = [
+  { key: "google", label: "Google 3D", color: 0x9ea4ad },
+  { key: "lidar_mns", label: "LiDAR MNS", color: 0xd9925b },
+  { key: "lidar_mnt", label: "LiDAR MNT", color: 0x6fae6a },
+];
+const layerOf = (t) => (t.name === "lidar_mns" || t.name === "lidar_mnt" ? t.name : "google");
 
 const Preview = (() => {
   let renderer = null, scene = null, camera = null, controls = null, container = null, root = null;
@@ -2180,17 +2201,47 @@ const Preview = (() => {
         mat = new THREE.MeshBasicMaterial({ map: texture(t.texture), side: THREE.DoubleSide });
       } else {
         g.computeVertexNormals();
-        mat = new THREE.MeshLambertMaterial({ color: t.color ?? 0x9ea4ad, side: THREE.DoubleSide });
+        const layer = LAYERS.find((l) => l.key === layerOf(t));
+        mat = new THREE.MeshLambertMaterial({ color: layer.color, side: THREE.DoubleSide });
       }
       const mesh = new THREE.Mesh(g, mat);
       mesh.name = t.label || t.name;
+      mesh.userData.layer = layerOf(t);
       root.add(mesh);
       tris += t.faces.length / 3;
     }
     scene.add(root);
+    legend(tiles);
     frameAll();
     if (!frame) loop();
     return tris;
+  }
+
+  // cases a cocher pour masquer / afficher chaque couche presente
+  function legend(tiles) {
+    let box = container.querySelector(".layers");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "layers";
+      container.append(box);
+    }
+    box.innerHTML = "";
+    const present = new Set(tiles.map(layerOf));
+    for (const l of LAYERS) {
+      if (!present.has(l.key)) continue;
+      const lab = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.dataset.layer = l.key;
+      cb.onchange = () => root.children.forEach((m) => { if (m.userData.layer === l.key) m.visible = cb.checked; });
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = `#${l.color.toString(16).padStart(6, "0")}`;
+      lab.append(cb, sw, document.createTextNode(l.label));
+      box.append(lab);
+    }
+    box.hidden = present.size < 2;
   }
 
   function frameAll() {
@@ -2649,6 +2700,114 @@ const LIDAR = {
 };
 
 if (typeof module !== "undefined") module.exports = { LIDAR, LIDAR_CONFIG, lonlatToL93, l93ToLonlat };
+
+</script>
+<script>
+"use strict";
+// Calage du LiDAR IGN sur la 3D Google (meme algorithme que core/align.py).
+// Les deux maillages sont ramenes a des grilles de hauteur (max par cellule) dans le repere local,
+// puis on cherche le decalage horizontal qui maximise leur correlation (NCC), d'abord grossierement
+// (cellules de 4 m, +/- 40 m) puis de plus en plus finement (1 m, 0,5 m). Le decalage vertical est la mediane des ecarts.
+
+const ALIGN = {
+  // recherche en pyramide : cellule (m) et portee (+/- m) de chaque passe
+  passes: [{ cell: 4, range: 40 }, { cell: 1, range: 4 }, { cell: 0.5, range: 1 }],
+  maxHalf: 150,     // on ne compare que le centre de la zone (300 m x 300 m au plus) : rapide sur telephone
+  minScore: 0.3,    // en dessous, le calage n'est pas fiable : on ne deplace rien
+  minOverlap: 400,
+
+  // points (Est, Nord, haut) d'un maillage au format exporteur (Y en haut, -Z = Nord) : tous les sommets,
+  // plus des points a l'interieur des grands triangles (un tous les ~1 m) pour ne pas laisser de trous
+  samples(tiles, half) {
+    const E = [], N = [], H = [], lim = half + 20, step = 1.0;
+    for (const t of tiles) {
+      const p = t.pos, f = t.faces;
+      for (let i = 0; i < p.length; i += 3) {
+        if (Math.abs(p[i]) > lim || Math.abs(p[i + 2]) > lim) continue;
+        E.push(p[i]); H.push(p[i + 1]); N.push(-p[i + 2]);
+      }
+      for (let i = 0; i < f.length; i += 3) {
+        const a = 3 * f[i], b = 3 * f[i + 1], c = 3 * f[i + 2];
+        const edge = Math.max(Math.hypot(p[a] - p[b], p[a + 2] - p[b + 2]), Math.hypot(p[b] - p[c], p[b + 2] - p[c + 2]),
+                              Math.hypot(p[c] - p[a], p[c + 2] - p[a + 2]));
+        if (edge <= 1.5 * step) continue;
+        if (Math.abs(p[a]) > lim + edge || Math.abs(p[a + 2]) > lim + edge) continue;
+        const k = Math.min(Math.ceil(edge / step), 40);
+        for (let u = 0; u <= k; u++) for (let v = 0; v <= k - u; v++) {
+          if (u === k || v === k || u + v === 0) continue;  // sommets deja pris
+          const wa = u / k, wb = v / k, wc = 1 - wa - wb;
+          E.push(wa * p[a] + wb * p[b] + wc * p[c]);
+          H.push(wa * p[a + 1] + wb * p[b + 1] + wc * p[c + 1]);
+          N.push(-(wa * p[a + 2] + wb * p[b + 2] + wc * p[c + 2]));
+        }
+      }
+    }
+    return { E, N, H };
+  },
+
+  grid(s, half, cell, dE = 0, dN = 0) {
+    const n = Math.ceil(2 * half / cell), g = new Float32Array(n * n).fill(NaN);
+    for (let i = 0; i < s.E.length; i++) {
+      const x = Math.floor((s.E[i] + dE + half) / cell), y = Math.floor((s.N[i] + dN + half) / cell);
+      if (x < 0 || y < 0 || x >= n || y >= n) continue;
+      const k = y * n + x;
+      if (!(g[k] >= s.H[i])) g[k] = s.H[i];
+    }
+    return { g, n };
+  },
+
+  // meilleur decalage (en cellules) de B pour ressembler a A, dans +/- r cellules
+  search(A, B, r) {
+    const n = A.n;
+    let best = { score: -2, sx: 0, sy: 0 };
+    for (let sy = -r; sy <= r; sy++) for (let sx = -r; sx <= r; sx++) {
+      let m = 0, sa = 0, sb = 0, saa = 0, sbb = 0, sab = 0;
+      for (let y = Math.max(0, sy); y < Math.min(n, n + sy); y++) {
+        const ra = y * n, rb = (y - sy) * n - sx;
+        for (let x = Math.max(0, sx); x < Math.min(n, n + sx); x++) {
+          const a = A.g[ra + x], b = B.g[rb + x];
+          if (a !== a || b !== b) continue;  // NaN
+          m++; sa += a; sb += b; saa += a * a; sbb += b * b; sab += a * b;
+        }
+      }
+      if (m < ALIGN.minOverlap) continue;
+      const va = saa - sa * sa / m, vb = sbb - sb * sb / m;
+      if (va <= 0 || vb <= 0) continue;
+      const score = (sab - sa * sb / m) / Math.sqrt(va * vb);
+      if (score > best.score) best = { score, sx, sy };
+    }
+    return best;
+  },
+
+  // decalage (Est, Nord, haut) a ajouter au LiDAR pour le poser sur Google, et score de correlation
+  solve(ref, lidar, half) {
+    half = Math.min(half, ALIGN.maxHalf);
+    let dE = 0, dN = 0, score = -2, coarseScore = -2, A = null;
+    for (const [k, pass] of ALIGN.passes.entries()) {
+      A = ALIGN.grid(ref, half, pass.cell);
+      const B = ALIGN.grid(lidar, half, pass.cell, dE, dN);
+      const best = ALIGN.search(A, B, Math.round(pass.range / pass.cell));
+      if (best.score <= -2) break;
+      dE += best.sx * pass.cell; dN += best.sy * pass.cell; score = best.score;
+      if (k === 0) coarseScore = best.score;
+    }
+    // vertical : mediane des ecarts une fois cale (cellules de la derniere passe)
+    const cell = ALIGN.passes[ALIGN.passes.length - 1].cell;
+    A = ALIGN.grid(ref, half, cell);
+    const B = ALIGN.grid(lidar, half, cell, dE, dN), diffs = [];
+    for (let k = 0; k < A.g.length; k++) if (A.g[k] === A.g[k] && B.g[k] === B.g[k]) diffs.push(A.g[k] - B.g[k]);
+    diffs.sort((x, y) => x - y);
+    const dH = diffs.length ? diffs[diffs.length >> 1] : 0;
+    return { dE, dN, dH, score, coarseScore };
+  },
+
+  apply(tile, d) {
+    const p = tile.pos;
+    for (let i = 0; i < p.length; i += 3) { p[i] += d.dE; p[i + 1] += d.dH; p[i + 2] -= d.dN; }
+  },
+};
+
+if (typeof module !== "undefined") module.exports = { ALIGN };
 
 </script>
 <script>
@@ -3342,12 +3501,16 @@ class Job {
         if (t) lidar.push(t);
       }
       if (!tiles.length && !lidar.length) throw new Error(this.estimateOnly ? "Rien à prévisualiser." : "Rien n'a été exporté.");
+      if (tiles.length && lidar.length && p.align) {
+        await this.alignLidar(tiles, lidar, products);
+        lidar.splice(0, lidar.length, ...lidar.filter(Boolean));
+      }
       if (this.estimateOnly) {
         this.ui.progress("Aperçu 3D", 0, 0);
         await sleep(0, this.abort.signal);
         const shown = [
           ...tiles.map((t) => ({ ...t, uv: t.uv && this.withTex ? previewUv(t.uv, p.flipV) : null, texture: this.withTex ? t.texture : null })),
-          ...lidar.map((t) => ({ ...t, color: t.name === "lidar_mnt" ? 0x7d9468 : 0x9ea4ad })),
+          ...lidar,
         ];
         const tris = this.ui.preview(shown);
         const what = p.content !== "none" ? `${this.estimate} tuiles à télécharger` : "LiDAR";
@@ -3377,6 +3540,45 @@ class Job {
         this.ui.done("error", "Erreur");
       }
     }
+  }
+
+  // Cale le LiDAR sur la 3D Google (decalage Est/Nord/haut) et verifie le sens Nord/Sud des grilles IGN.
+  // Modifie les tuiles LiDAR en place (et les regenere si les grilles etaient inversees).
+  async alignLidar(tiles, lidar, products) {
+    const p = this.p, ui = this.ui;
+    ui.progress("Calage LiDAR / Google", 0, 0);
+    await sleep(0, this.abort.signal);
+    const quiet = { log() {}, progress() {} };
+    const mnsOf = async () => {
+      const t = lidar.find((x) => x.name === "lidar_mns");
+      if (t) return t;
+      return LIDAR.tile(this.fetcher, { ...p, lidarRes: Math.max(p.lidarRes, 1) }, this.frame, "mns", quiet);
+    };
+    const ref = ALIGN.samples(tiles, p.half);
+    let mns = await mnsOf();
+    if (!mns || !ref.E.length) { ui.log("WARN", "Calage LiDAR impossible : pas de MNS ou pas de 3D Google au centre de la zone"); return; }
+    let sol = ALIGN.solve(ref, ALIGN.samples([mns], p.half), p.half);
+    // le sens des lignes du BIL n'a pas pu etre verifie sur le vrai service : on essaie l'autre
+    const orig = LIDAR_CONFIG.bilSouthFirst;
+    LIDAR_CONFIG.bilSouthFirst = !orig;
+    const flipped = await LIDAR.tile(this.fetcher, { ...p, lidarRes: Math.max(p.lidarRes, 1) }, this.frame, "mns", quiet);
+    const solF = flipped ? ALIGN.solve(ref, ALIGN.samples([flipped], p.half), p.half) : null;
+    if (solF && solF.coarseScore > sol.coarseScore + 0.05) {
+      ui.log("WARN", `Grilles IGN inversées Nord/Sud (corrélation ${sol.coarseScore.toFixed(2)} → ${solF.coarseScore.toFixed(2)}) : corrigé pour la suite`);
+      sol = solF;
+      for (let i = 0; i < lidar.length; i++) {
+        lidar[i] = await LIDAR.tile(this.fetcher, p, this.frame, lidar[i].name.replace("lidar_", ""), quiet);
+      }
+    } else {
+      LIDAR_CONFIG.bilSouthFirst = orig;
+    }
+    if (sol.score < ALIGN.minScore) {
+      ui.log("WARN", `Calage LiDAR non fiable (corrélation ${sol.score.toFixed(2)}) : LiDAR laissé à sa position géographique`);
+      return;
+    }
+    for (const t of lidar) if (t) ALIGN.apply(t, sol);
+    const f = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(1)} m`;
+    ui.log("INFO", `LiDAR calé sur Google : Est ${f(sol.dE)}, Nord ${f(sol.dN)}, hauteur ${f(sol.dH)} (corrélation ${sol.score.toFixed(2)})`);
   }
 
   // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
@@ -3575,7 +3777,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -3592,7 +3794,7 @@ function launch(estimateOnly) {
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value) };
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
@@ -3606,6 +3808,7 @@ function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
   $("merge").disabled = $("content").value === "none";
   $("lidarres").disabled = $("lidar").value === "none";
+  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
 }
 $("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);

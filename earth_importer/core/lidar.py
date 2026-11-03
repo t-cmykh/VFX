@@ -86,6 +86,7 @@ class Lidar:
                                cache_dir=cache_dir, cancel=cancel, log=log)
         self.half = params.radius
         self.res = float(params.lidar_res)
+        self.shift = (0.0, 0.0, 0.0)   # calage sur la 3D Google (Est, Nord, haut), voir core/align.py
 
     # ------------------------------------------------------------ zone en Lambert-93
     def bbox(self, res):
@@ -193,7 +194,7 @@ class Lidar:
         X, Y = np.meshgrid(xs, ys)
         lon, lat = lambert93_to_lonlat(X.ravel(), Y.ravel())
         alt = np.nan_to_num(grid.ravel().astype(np.float64)) + float(self.cfg.get("z_offset", 0.0))
-        enu = self.frame.to_enu(sphere_ecef(lat, lon, alt, self.frame_radius()))
+        enu = self.frame.to_enu(sphere_ecef(lat, lon, alt, self.frame_radius())) + np.array(self.shift)
         valid = np.isfinite(grid)
         tris = grid_mesh(grid, valid)
         # decoupe comme pour Google : on retire les triangles entierement hors de la zone

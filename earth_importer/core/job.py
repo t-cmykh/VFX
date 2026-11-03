@@ -16,6 +16,7 @@ import numpy as np
 from . import rocktree as rt
 from .fetch import Cancelled, Fetcher, FetchError
 from .geo import LocalFrame
+from . import align
 from .lidar import Lidar
 
 HERE = Path(__file__).resolve().parent.parent
@@ -36,6 +37,7 @@ class Params:
     lidar: str = "none"        # LiDAR HD IGN maille : "none" | "mns" | "mnt" | "both"
     lidar_res: float = 1.0     # pas de la grille LiDAR (m)
     laz: bool = False          # dalles brutes du nuage de points LiDAR HD
+    align: bool = True         # cale le LiDAR sur la 3D Google (decalage Est/Nord/haut)
 
     def validate(self):
         if not -90 <= self.lat <= 90 or not -180 <= self.lon <= 180:
@@ -89,6 +91,7 @@ class Job:
         self.with_tex = params.content == "geo_tex"
         self.preview = None         # apercu 3D empaquete (bouton Tester)
         self.preview_tiles = []
+        self.ref_pts = []           # points de la 3D Google (Est, Nord, haut) pour caler le LiDAR
 
     # ------------------------------------------------------------ evenements
     def log(self, level, msg):
@@ -242,9 +245,56 @@ class Job:
             return self.blender_export(obj_path, self.with_tex)
         return obj_path
 
+    def keep_ref(self, v, faces):
+        """Garde des points de la 3D Google (Y en haut -> Est, Nord, haut) pour le calage du LiDAR."""
+        if self.p.align and self.p.lidar != "none":
+            enu = np.stack([v[:, 0], -v[:, 2], v[:, 1]], axis=1)
+            self.ref_pts.append(align.samples(enu, faces, min(self.p.radius, align.MAX_HALF)))
+
+    def align_lidar(self, lid):
+        """Cherche le decalage qui pose le LiDAR sur la 3D Google, et verifie le sens Nord/Sud des grilles IGN."""
+        self.progress("Calage LiDAR / Google", 0, 0)
+        ref = np.concatenate(self.ref_pts)
+        half = self.p.radius
+
+        def mns_points():
+            res0 = lid.res
+            lid.res = max(res0, 1.0)
+            try:
+                m = lid.mesh("mns")
+            finally:
+                lid.res = res0
+            return None if m is None else align.samples(m[0], m[1], min(half, align.MAX_HALF))
+
+        pts = mns_points()
+        if pts is None or not len(ref):
+            self.log("WARN", "Calage LiDAR impossible : pas de MNS ou pas de 3D Google au centre de la zone")
+            return
+        sol = align.solve(ref, pts, half)
+        # le sens des lignes du BIL n'a pas pu etre verifie sur le vrai service : on essaie l'autre
+        orig = lid.cfg.get("bil_south_first", True)
+        lid.cfg["bil_south_first"] = not orig
+        flipped = mns_points()
+        sol_f = align.solve(ref, flipped, half) if flipped is not None else None
+        if sol_f and sol_f["coarse"] > sol["coarse"] + 0.05:
+            self.log("WARN", f"Grilles IGN inversees Nord/Sud (correlation {sol['coarse']:.2f} -> "
+                             f"{sol_f['coarse']:.2f}) : corrige pour la suite")
+            sol = sol_f
+        else:
+            lid.cfg["bil_south_first"] = orig
+        if sol["score"] < align.MIN_SCORE:
+            self.log("WARN", f"Calage LiDAR non fiable (correlation {sol['score']:.2f}) : "
+                             "LiDAR laisse a sa position geographique")
+            return
+        lid.shift = (sol["dE"], sol["dN"], sol["dH"])
+        self.log("INFO", f"LiDAR cale sur Google : Est {sol['dE']:+.1f} m, Nord {sol['dN']:+.1f} m, "
+                         f"hauteur {sol['dH']:+.1f} m (correlation {sol['score']:.2f})")
+
     def run_lidar(self):
         """LiDAR HD IGN : MNS/MNT mailles dans le meme repere que Google, et/ou dalles LAZ brutes."""
         lid = Lidar(self.cfg, self.p, self.frame, self.cache_dir, self.cancel, self.log, self.progress)
+        if self.p.align and self.ref_pts and lid.products():
+            self.align_lidar(lid)
         if self.estimate_only:
             lid.estimate()
             if lid.products():
@@ -254,8 +304,7 @@ class Job:
                 if res:
                     v, faces = res
                     self.preview_tiles.append({"name": f"lidar_{prod}", "faces": faces,
-                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1),
-                                               "color": 0x7d9468 if prod == "mnt" else 0x9ea4ad})
+                                               "pos": np.stack([v[:, 0], v[:, 2], -v[:, 1]], axis=1)})
             return []
         outputs = []
         self.out.mkdir(parents=True, exist_ok=True)
@@ -353,6 +402,7 @@ class Job:
         if res is None:
             return
         v, faces, uv, tex = res
+        self.keep_ref(v, faces)
         faces = faces + 1
         obj.write(f"o tile_{name}\n")
         np.savetxt(obj, v, fmt="v %.4f %.4f %.4f")
@@ -416,6 +466,7 @@ class Job:
                         res = self.mesh_arrays(node, mesh, excl[path], flip_v)
                         if res:
                             v, faces, uv, tex = res
+                            self.keep_ref(v, faces)
                             tiles.append({"name": f"tile_{path}_{i}", "pos": v, "faces": faces,
                                           "uv": uv, "texture": tex or None})
                 done += 1

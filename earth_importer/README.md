@@ -106,7 +106,13 @@ zone. Les données sont libres (Licence Ouverte), sans clé, mais **France uniqu
   selon le format), dans **le même repère que la 3D Google** (même origine, mêmes axes) : les deux
   se superposent directement dans le logiciel 3D. Pas de texture.
 - **Pas** : 0,5 m (résolution native), 1, 2 ou 5 m. Une zone de 400 m au pas de 0,5 m ≈ 1,3 M triangles.
-  **Tester** annonce la taille de la grille et affiche le LiDAR dans l'aperçu 3D (gris : MNS, vert : MNT).
+  **Tester** annonce la taille de la grille et affiche le LiDAR dans l'aperçu 3D (orange : MNS,
+  vert : MNT, gris : Google sans texture ; cases en haut à droite pour masquer chaque couche).
+- **Calage → Sur Google** (coché par défaut, quand la 3D Google est demandée aussi) : l'outil compare
+  le relief du MNS et celui de la 3D Google au centre de la zone (300 m × 300 m au plus) et déplace le
+  LiDAR (Est, Nord, hauteur) pour qu'ils se superposent. Il vérifie au passage le sens Nord/Sud des
+  grilles IGN et le corrige si besoin. Le log donne le décalage trouvé et la corrélation (de 0 à 1) ;
+  sous 0,3 le calage est jugé non fiable et le LiDAR reste à sa position géographique.
 - Si le MNT LiDAR HD n'existe pas encore sur la zone, repli automatique sur le RGE ALTI (1 m).
 - **Contenu → Rien (LiDAR seul)** pour ne pas interroger Google.
 - **Dalles LAZ** (version Python seulement) : télécharge les dalles brutes du nuage de points
@@ -120,8 +126,8 @@ Python) ou en haut de `web/src/lidar.js` (version fichier local).
 
 À vérifier au premier essai réel (l'environnement de développement n'avait pas accès à l'IGN) :
 - le **sens Nord/Sud** des grilles : si le relief sort inversé, passer `bil_south_first` à `false` ;
-- le **calage vertical** sur la 3D Google : le LiDAR est en altitude IGN69 ; s'il flotte ou s'enfonce
-  par rapport au maillage Google, régler `z_offset` (en mètres) ;
+- le **calage** sur la 3D Google : automatique (case Calage), sinon `z_offset` (en mètres) pour la
+  hauteur ;
 - le nom de la couche WFS des dalles (`laz_typename`) si la case Dalles LAZ ne trouve rien.
 
 ## Ce que fait l'outil

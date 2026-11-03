@@ -70,6 +70,7 @@ class Request(BaseModel):
     lidar: str = "none"
     lidar_res: float = 1.0
     laz: bool = False
+    align: bool = True
 
 
 def start(req, estimate_only):
