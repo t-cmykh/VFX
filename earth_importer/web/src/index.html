@@ -53,6 +53,9 @@
       <option value="5">5 m</option>
     </select>
   </label>
+  <label title="Recale le LiDAR sur la 3D Google (décalage Est/Nord/hauteur trouvé en comparant les reliefs)">Calage
+    <span class="check"><input id="align" type="checkbox" checked> Sur Google</span>
+  </label>
   <label title="Tuiles séparées, ou un seul objet avec une seule texture (atlas)">Fusion
     <select id="merge">
       <option value="0">Tuiles séparées</option>
@@ -101,6 +104,7 @@
 <!-- @inline-js ../../ui/preview.js -->
 <!-- @inline-js rocktree.js -->
 <!-- @inline-js lidar.js -->
+<!-- @inline-js align.js -->
 <!-- @inline-js exporters.js -->
 <!-- @inline-js merge.js -->
 <!-- @inline-js app.js -->

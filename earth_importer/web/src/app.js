@@ -278,12 +278,16 @@ class Job {
         if (t) lidar.push(t);
       }
       if (!tiles.length && !lidar.length) throw new Error(this.estimateOnly ? "Rien à prévisualiser." : "Rien n'a été exporté.");
+      if (tiles.length && lidar.length && p.align) {
+        await this.alignLidar(tiles, lidar, products);
+        lidar.splice(0, lidar.length, ...lidar.filter(Boolean));
+      }
       if (this.estimateOnly) {
         this.ui.progress("Aperçu 3D", 0, 0);
         await sleep(0, this.abort.signal);
         const shown = [
           ...tiles.map((t) => ({ ...t, uv: t.uv && this.withTex ? previewUv(t.uv, p.flipV) : null, texture: this.withTex ? t.texture : null })),
-          ...lidar.map((t) => ({ ...t, color: t.name === "lidar_mnt" ? 0x7d9468 : 0x9ea4ad })),
+          ...lidar,
         ];
         const tris = this.ui.preview(shown);
         const what = p.content !== "none" ? `${this.estimate} tuiles à télécharger` : "LiDAR";
@@ -313,6 +317,45 @@ class Job {
         this.ui.done("error", "Erreur");
       }
     }
+  }
+
+  // Cale le LiDAR sur la 3D Google (decalage Est/Nord/haut) et verifie le sens Nord/Sud des grilles IGN.
+  // Modifie les tuiles LiDAR en place (et les regenere si les grilles etaient inversees).
+  async alignLidar(tiles, lidar, products) {
+    const p = this.p, ui = this.ui;
+    ui.progress("Calage LiDAR / Google", 0, 0);
+    await sleep(0, this.abort.signal);
+    const quiet = { log() {}, progress() {} };
+    const mnsOf = async () => {
+      const t = lidar.find((x) => x.name === "lidar_mns");
+      if (t) return t;
+      return LIDAR.tile(this.fetcher, { ...p, lidarRes: Math.max(p.lidarRes, 1) }, this.frame, "mns", quiet);
+    };
+    const ref = ALIGN.samples(tiles, p.half);
+    let mns = await mnsOf();
+    if (!mns || !ref.E.length) { ui.log("WARN", "Calage LiDAR impossible : pas de MNS ou pas de 3D Google au centre de la zone"); return; }
+    let sol = ALIGN.solve(ref, ALIGN.samples([mns], p.half), p.half);
+    // le sens des lignes du BIL n'a pas pu etre verifie sur le vrai service : on essaie l'autre
+    const orig = LIDAR_CONFIG.bilSouthFirst;
+    LIDAR_CONFIG.bilSouthFirst = !orig;
+    const flipped = await LIDAR.tile(this.fetcher, { ...p, lidarRes: Math.max(p.lidarRes, 1) }, this.frame, "mns", quiet);
+    const solF = flipped ? ALIGN.solve(ref, ALIGN.samples([flipped], p.half), p.half) : null;
+    if (solF && solF.coarseScore > sol.coarseScore + 0.05) {
+      ui.log("WARN", `Grilles IGN inversées Nord/Sud (corrélation ${sol.coarseScore.toFixed(2)} → ${solF.coarseScore.toFixed(2)}) : corrigé pour la suite`);
+      sol = solF;
+      for (let i = 0; i < lidar.length; i++) {
+        lidar[i] = await LIDAR.tile(this.fetcher, p, this.frame, lidar[i].name.replace("lidar_", ""), quiet);
+      }
+    } else {
+      LIDAR_CONFIG.bilSouthFirst = orig;
+    }
+    if (sol.score < ALIGN.minScore) {
+      ui.log("WARN", `Calage LiDAR non fiable (corrélation ${sol.score.toFixed(2)}) : LiDAR laissé à sa position géographique`);
+      return;
+    }
+    for (const t of lidar) if (t) ALIGN.apply(t, sol);
+    const f = (x) => `${x >= 0 ? "+" : ""}${x.toFixed(1)} m`;
+    ui.log("INFO", `LiDAR calé sur Google : Est ${f(sol.dE)}, Nord ${f(sol.dN)}, hauteur ${f(sol.dH)} (corrélation ${sol.score.toFixed(2)})`);
   }
 
   // 3D Google : tuiles pretes pour les exporteurs (fusionnees si demande), [] en estimation
@@ -511,7 +554,7 @@ $("tab-map").onclick = () => showView("map");
 $("tab-3d").onclick = () => showView("3d");
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "side", "coords", "go", "draw", "name", "flipv", "merge", "atlas", "lidar", "lidarres", "align"]) $(id).disabled = running;
   if (!running) syncAtlas();
   if (running) setDrawMode(false);
   $("cancel").disabled = !running;
@@ -528,7 +571,7 @@ function launch(estimateOnly) {
   name = name.replace(/[^\w.-]+/g, "_");
   const p = { lat: c[0], lon: c[1], side, half: side / 2, level, content: $("content").value, fmt: $("fmt").value, name,
               flipV: CONFIG.flipV !== $("flipv").checked, merge: $("merge").value === "1", atlas: $("atlas").value,
-              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value) };
+              lidar: $("lidar").value, lidarRes: parseFloat($("lidarres").value), align: $("align").checked };
   if (p.content === "none" && p.lidar === "none") return ui.log("ERROR", "Rien à télécharger : choisis la 3D Google et/ou le LiDAR");
   setRunning(true);
   document.body.dataset.state = "running";
@@ -542,6 +585,7 @@ function syncAtlas() {
   $("atlas").disabled = $("merge").value !== "1" || $("content").value !== "geo_tex";
   $("merge").disabled = $("content").value === "none";
   $("lidarres").disabled = $("lidar").value === "none";
+  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
 }
 $("lidar").addEventListener("change", syncAtlas);
 $("merge").addEventListener("change", syncAtlas);

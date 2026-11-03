@@ -117,7 +117,7 @@ function progress(phase, done, total) {
 }
 
 function setRunning(running) {
-  for (const id of ["download", "estimate", "fmt", "content", "radius", "coords", "go", "outdir", "lidar", "lidarres", "laz"]) $(id).disabled = running;
+  for (const id of ["download", "estimate", "fmt", "content", "radius", "coords", "go", "outdir", "lidar", "lidarres", "laz", "align"]) $(id).disabled = running;
   if (!running) syncLidar();
   $("cancel").disabled = !running;
 }
@@ -136,13 +136,16 @@ function params() {
     lidar: $("lidar").value,
     lidar_res: parseFloat($("lidarres").value),
     laz: $("laz").checked,
+    align: $("align").checked,
   };
 }
 
 function syncLidar() {
   $("lidarres").disabled = $("lidar").value === "none";
+  $("align").disabled = $("lidar").value === "none" || $("content").value === "none";
 }
 $("lidar").addEventListener("change", syncLidar);
+$("content").addEventListener("change", syncLidar);
 syncLidar();
 
 async function post(url, body) {
