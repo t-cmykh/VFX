@@ -1,0 +1,358 @@
+<title>Scan PS5 France</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout : en-tête compact, barre de filtres collante, liste d'offres en lignes triées par prix, puis annonces écartées */
+:root {
+  --bg: #f3f5f9;
+  --surface: #ffffff;
+  --fg: #141a26;
+  --muted: #5b6478;
+  --line: #dde2ec;
+  --accent: #1f4fd1;
+  --accent-soft: #e4ebfd;
+  --ok: #157a46;
+  --ok-soft: #e1f3e9;
+  --warn: #9a5b00;
+  --warn-soft: #fbefd9;
+  --bad: #b3261e;
+  --bad-soft: #fbe5e3;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e121b; --surface: #161c29; --fg: #e8ecf4; --muted: #96a0b5; --line: #262f42;
+    --accent: #7ea2ff; --accent-soft: #1c2848; --ok: #5cd394; --ok-soft: #14301f;
+    --warn: #f2b85b; --warn-soft: #33270f; --bad: #ff8a80; --bad-soft: #3a1714;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e121b; --surface: #161c29; --fg: #e8ecf4; --muted: #96a0b5; --line: #262f42;
+  --accent: #7ea2ff; --accent-soft: #1c2848; --ok: #5cd394; --ok-soft: #14301f;
+  --warn: #f2b85b; --warn-soft: #33270f; --bad: #ff8a80; --bad-soft: #3a1714;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+}
+.wrap {
+  max-width: 980px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+header { padding-block: 32px 20px; }
+.eyebrow {
+  font: 600 12px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+h1 {
+  font: 800 clamp(28px, 5vw, 40px)/1.05 var(--font-display); margin: 10px 0 12px;
+  letter-spacing: -.02em; text-wrap: balance;
+}
+.lede { color: var(--muted); max-width: 64ch; margin: 0; }
+.summary { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.best {
+  display: flex; flex-direction: column; gap: 2px; padding: 10px 14px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; min-width: 0;
+}
+.best span { font-size: 12px; color: var(--muted); }
+.best strong { font: 700 18px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+.best em { font-style: normal; font-size: 12px; color: var(--muted); }
+
+body::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px);
+  z-index: 10; background: var(--bg);
+}
+.bar {
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+}
+.bar .wrap { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; padding-block: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: 500 13px/1 var(--font-body); padding: 8px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+}
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.chip .n { font-family: var(--font-mono); opacity: .7; margin-left: 4px; }
+.ctrl { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+select {
+  font: 500 13px var(--font-body); padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--fg);
+}
+input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+main { padding-block: 20px 48px; display: grid; gap: 32px; }
+h2 { font: 700 18px/1.2 var(--font-display); margin: 0 0 12px; }
+.list { display: grid; gap: 8px; }
+.offer {
+  display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 14px; align-items: center;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+}
+.rank { font: 700 13px var(--font-mono); color: var(--muted); }
+.type {
+  display: inline-block; font: 600 11px/1 var(--font-body); letter-spacing: .06em; text-transform: uppercase;
+  padding: 5px 7px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); margin-top: 6px;
+}
+.title { font-weight: 600; margin: 0; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 13px; color: var(--muted); margin-top: 4px; }
+.pill { font-size: 12px; font-weight: 600; padding: 3px 8px; border-radius: 999px; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); }
+.note { font-size: 13px; color: var(--warn); margin-top: 4px; }
+.right { text-align: right; display: grid; gap: 6px; justify-items: end; }
+.price { font: 700 22px/1 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.go {
+  font: 600 13px var(--font-body); color: var(--accent); text-decoration: none;
+  border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; white-space: nowrap;
+}
+.go:hover { background: var(--accent-soft); }
+.empty { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.rule { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 14px; }
+.rule b { display: block; margin-bottom: 2px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 560px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--bad); text-decoration: line-through; }
+footer { color: var(--muted); font-size: 13px; padding-block: 0 40px; }
+footer p { max-width: 70ch; }
+
+@media (max-width: 560px) {
+  .offer { grid-template-columns: minmax(0, 1fr) auto; }
+  .rank { display: none; }
+  .price { font-size: 19px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .offer { transition: transform .12s ease; }
+  .offer:hover { transform: translateY(-1px); }
+}
+</style>
+
+<header class="wrap">
+  <div class="eyebrow">Consoles neuves · Livraison France · Relevé du 18 au 20 nov. 2026</div>
+  <h1>Où acheter une PS5 au meilleur prix</h1>
+  <p class="lede">Seules les offres vendues et expédiées par l'enseigne elle-même sont listées. Les vendeurs tiers des marketplaces, le reconditionné et les prix hors marché sont écartés. Les prix bougent vite avant le Black Friday du 27 novembre : vérifiez la fiche avant de payer.</p>
+  <div class="summary" id="summary"></div>
+</header>
+
+<div class="bar">
+  <div class="wrap">
+    <div class="chips" id="chips" role="group" aria-label="Type de PS5"></div>
+    <label class="ctrl" for="sort">Trier
+      <select id="sort">
+        <option value="asc">Prix croissant</option>
+        <option value="desc">Prix décroissant</option>
+      </select>
+    </label>
+    <label class="ctrl" for="stock"><input type="checkbox" id="stock"> En stock confirmé uniquement</label>
+  </div>
+</div>
+
+<main class="wrap">
+  <section>
+    <h2 id="count">Offres fiables</h2>
+    <div class="list" id="list"></div>
+  </section>
+
+  <section>
+    <h2>Critères de fiabilité</h2>
+    <div class="rules">
+      <div class="rule"><b>Vendu par l'enseigne</b>Amazon « expédié et vendu par Amazon », Fnac, Leclerc, etc. Aucun vendeur partenaire.</div>
+      <div class="rule"><b>Console neuve</b>Pas d'occasion ni de reconditionné, garantie constructeur de 2 ans.</div>
+      <div class="rule"><b>Prix cohérent</b>Au-dessus de 15 % du prix officiel Sony, l'annonce est écartée.</div>
+      <div class="rule"><b>Livraison en France</b>Livraison à domicile ou retrait en magasin depuis un site .fr.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Annonces écartées</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Où</th><th>Modèle</th><th>Prix</th><th>Pourquoi</th></tr></thead>
+        <tbody id="rejected"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  <p>Prix officiels Sony France depuis le 2 avril 2026 : Digital 599,99 €, Standard (lecteur, 1 To) 649,99 €, Pro 899,99 €. Les liens ouvrent la page PS5 de chaque enseigne. Pour mettre la liste à jour, modifiez le tableau <code>OFFERS</code> en bas du fichier.</p>
+</footer>
+
+<script>
+const OFFICIAL = { digital: 599.99, standard: 649.99, pro: 899.99 };
+const TYPES = [
+  { id: "all", label: "Toutes" },
+  { id: "digital", label: "Digital" },
+  { id: "standard", label: "Standard (lecteur)" },
+  { id: "pro", label: "Pro" },
+  { id: "pack", label: "Packs" }
+];
+const TYPE_LABEL = { digital: "PS5 Digital", standard: "PS5 Standard", pro: "PS5 Pro", pack: "Pack" };
+
+// stock : "ok" = en stock confirmé, "unk" = non confirmé, "out" = rupture
+const OFFERS = [
+  { shop: "Cultura", type: "digital", title: "PS5 Slim Digital 825 Go", price: 449.99, stock: "unk", date: "20/11",
+    note: "Prix très bas relevé par un comparateur, à confirmer sur le site.", url: "https://www.cultura.com/search/results?search_query=ps5%20digital" },
+  { shop: "Carrefour", type: "digital", title: "PS5 Slim Digital 825 Go", price: 599.00, stock: "unk", date: "20/11",
+    url: "https://www.carrefour.fr/s?q=ps5+digital" },
+  { shop: "Micromania", type: "digital", title: "PS5 Slim Digital 825 Go", price: 599.90, stock: "ok", date: "20/11",
+    url: "https://www.micromania.fr/search?q=ps5%20digital" },
+  { shop: "Auchan", type: "digital", title: "PS5 Slim Digital 825 Go", price: 599.99, stock: "unk", date: "18/11",
+    url: "https://www.auchan.fr/recherche?text=ps5+digital" },
+  { shop: "PlayStation Direct (Sony)", type: "digital", title: "PS5 Slim Digital 825 Go", price: 599.99, stock: "unk", date: "18/11",
+    url: "https://direct.playstation.com/fr-fr/buy-consoles" },
+
+  { shop: "E.Leclerc", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.00, stock: "unk", date: "19/11",
+    note: "Retrait gratuit en magasin. Une source indique la fin de l'offre au 15/11.", url: "https://www.e.leclerc/recherche?q=ps5" },
+  { shop: "Micromania", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.90, stock: "ok", date: "20/11",
+    url: "https://www.micromania.fr/search?q=ps5" },
+  { shop: "Amazon (vendu par Amazon)", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.99, stock: "unk", date: "20/11",
+    url: "https://www.amazon.fr/s?k=console+ps5&rh=p_6%3AA1X6FK5RDHNB96" },
+  { shop: "Auchan", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.99, stock: "unk", date: "18/11",
+    url: "https://www.auchan.fr/recherche?text=ps5" },
+  { shop: "PlayStation Direct (Sony)", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.99, stock: "unk", date: "18/11",
+    url: "https://direct.playstation.com/fr-fr/buy-consoles" },
+  { shop: "Fnac", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.99, stock: "unk", date: "19/11",
+    note: "Choisir l'offre vendue par Fnac, des vendeurs tiers affichent jusqu'à 979 €.", url: "https://www.fnac.com/n560824/PS5/Consoles-PS5-Slim" },
+  { shop: "Boulanger", type: "standard", title: "PS5 Slim Standard 1 To (lecteur)", price: 649.99, stock: "unk", date: "nov.",
+    note: "Relevé non daté précisément.", url: "https://www.boulanger.com/resultats?tr=ps5" },
+
+  { shop: "Micromania", type: "pack", title: "PS5 Standard + 2e manette DualSense + 2 jeux", price: 789.96, stock: "ok", date: "19/11",
+    note: "Offre valable du 19 au 30 novembre, dans la limite des stocks.", url: "https://www.micromania.fr/search?q=pack%20ps5" },
+
+  { shop: "Auchan", type: "pro", title: "PS5 Pro 2 To", price: 799.99, stock: "unk", date: "17/11",
+    note: "100 € sous le prix officiel.", url: "https://www.auchan.fr/recherche?text=ps5+pro" },
+  { shop: "Micromania", type: "pro", title: "PS5 Pro 2 To", price: 899.90, stock: "ok", date: "20/11",
+    url: "https://www.micromania.fr/search?q=ps5%20pro" },
+  { shop: "PlayStation Direct (Sony)", type: "pro", title: "PS5 Pro 2 To", price: 899.99, stock: "out", date: "17/11",
+    url: "https://direct.playstation.com/fr-fr/buy-consoles" }
+];
+
+const REJECTED = [
+  { shop: "E.Leclerc (partenaires)", model: "PS5 Pro", price: 1959.99, why: "Vendeur tiers, plus du double du prix officiel." },
+  { shop: "Boulanger (marketplace)", model: "PS5 Pro", price: null, priceText: "≈ 2× officiel", why: "Vendeurs tiers à près de deux fois le prix officiel." },
+  { shop: "Fnac (vendeur tiers)", model: "PS5 Standard", price: 979, why: "Vendeur tiers, +50 % sur le prix officiel." },
+  { shop: "Darty (marketplace)", model: "PS5 Standard", price: 917.17, why: "Offres de vendeurs tiers uniquement." },
+  { shop: "E.Leclerc (partenaire)", model: "PS5 Digital", price: 871.47, why: "Seule offre restante sur la fiche, vendeur tiers." },
+  { shop: "Back Market", model: "PS5 Pro reconditionnée", price: 780, why: "Reconditionné, pas une console neuve." }
+];
+
+const fmt = n => n.toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
+const STOCK = { ok: ["ok", "En stock"], unk: ["warn", "Stock à vérifier"], out: ["bad", "Rupture"] };
+
+const state = { type: "all", sort: "asc", stockOnly: false };
+try {
+  const saved = JSON.parse(localStorage.getItem("ps5scan") || "{}");
+  Object.assign(state, saved);
+} catch (e) {}
+const save = () => { try { localStorage.setItem("ps5scan", JSON.stringify(state)); } catch (e) {} };
+
+function diffLabel(o) {
+  const ref = OFFICIAL[o.type];
+  if (!ref) return "";
+  const d = o.price - ref;
+  if (Math.abs(d) < 1) return "Prix officiel";
+  return (d < 0 ? "−" : "+") + fmt(Math.abs(d)).replace(/\s?€/, " €") + " vs officiel";
+}
+
+function renderSummary() {
+  const el = document.getElementById("summary");
+  el.innerHTML = "";
+  ["digital", "standard", "pro"].forEach(t => {
+    const best = OFFERS.filter(o => o.type === t && o.stock !== "out").sort((a, b) => a.price - b.price)[0];
+    if (!best) return;
+    const d = document.createElement("div");
+    d.className = "best";
+    d.innerHTML = `<span>${TYPE_LABEL[t]} dès</span><strong>${fmt(best.price)}</strong><em>${best.shop}</em>`;
+    el.appendChild(d);
+  });
+}
+
+function renderChips() {
+  const el = document.getElementById("chips");
+  el.innerHTML = "";
+  TYPES.forEach(t => {
+    const n = t.id === "all" ? OFFERS.length : OFFERS.filter(o => o.type === t.id).length;
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "chip"; b.id = "chip-" + t.id;
+    b.setAttribute("aria-pressed", String(state.type === t.id));
+    b.innerHTML = `${t.label}<span class="n">${n}</span>`;
+    b.addEventListener("click", () => { state.type = t.id; save(); render(); });
+    el.appendChild(b);
+  });
+}
+
+function renderList() {
+  let rows = OFFERS.filter(o => state.type === "all" || o.type === state.type);
+  if (state.stockOnly) rows = rows.filter(o => o.stock === "ok");
+  rows.sort((a, b) => state.sort === "asc" ? a.price - b.price : b.price - a.price);
+
+  document.getElementById("count").textContent =
+    rows.length + (rows.length > 1 ? " offres fiables" : " offre fiable");
+
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty">Aucune offre en stock confirmé pour ce type. Décochez « En stock confirmé uniquement » pour voir les offres à vérifier.</div>`;
+    return;
+  }
+  rows.forEach((o, i) => {
+    const [cls, txt] = STOCK[o.stock];
+    const art = document.createElement("article");
+    art.className = "offer";
+    art.innerHTML = `
+      <div class="rank">#${i + 1}</div>
+      <div style="min-width:0">
+        <p class="title">${o.title}</p>
+        <div class="meta">
+          <span>${o.shop}</span>
+          <span class="pill ${cls}">${txt}</span>
+          <span>relevé le ${o.date}</span>
+        </div>
+        ${o.note ? `<div class="note">${o.note}</div>` : ""}
+        <span class="type">${TYPE_LABEL[o.type]}</span>
+      </div>
+      <div class="right">
+        <div class="price">${fmt(o.price)}</div>
+        <div class="meta" style="margin:0">${diffLabel(o)}</div>
+        <a class="go" href="${o.url}" target="_blank" rel="noopener noreferrer">Voir l'offre ↗</a>
+      </div>`;
+    list.appendChild(art);
+  });
+}
+
+function renderRejected() {
+  document.getElementById("rejected").innerHTML = REJECTED.map(r =>
+    `<tr><td>${r.shop}</td><td>${r.model}</td><td class="num">${r.price == null ? r.priceText : fmt(r.price)}</td><td>${r.why}</td></tr>`
+  ).join("");
+}
+
+function render() {
+  renderChips();
+  renderList();
+  document.getElementById("sort").value = state.sort;
+  document.getElementById("stock").checked = state.stockOnly;
+}
+
+document.getElementById("sort").addEventListener("change", e => { state.sort = e.target.value; save(); renderList(); });
+document.getElementById("stock").addEventListener("change", e => { state.stockOnly = e.target.checked; save(); renderList(); });
+
+renderSummary();
+renderRejected();
+render();
+</script>
