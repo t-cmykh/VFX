@@ -99,6 +99,7 @@ h2 { font: 700 18px/1.2 var(--font-display); margin: 0 0 12px; }
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
 }
 .rank { font: 700 13px var(--font-mono); color: var(--muted); }
+.cond { background: var(--warn-soft); color: var(--warn); margin-left: 4px; }
 .type {
   display: inline-block; font: 600 11px/1 var(--font-body); letter-spacing: .06em; text-transform: uppercase;
   padding: 5px 7px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); margin-top: 6px;
@@ -143,15 +144,22 @@ footer p { max-width: 70ch; }
 </style>
 
 <header class="wrap">
-  <div class="eyebrow">Consoles neuves · Livraison France · Relevé du 18 au 20 nov. 2026</div>
+  <div class="eyebrow">Neuf et reconditionné · Livraison France · Relevé du 18 au 22 nov. 2026</div>
   <h1>Où acheter une PS5 au meilleur prix</h1>
-  <p class="lede">Seules les offres vendues et expédiées par l'enseigne elle-même sont listées. Les vendeurs tiers des marketplaces, le reconditionné et les prix hors marché sont écartés. Les prix bougent vite avant le Black Friday du 27 novembre : vérifiez la fiche avant de payer.</p>
+  <p class="lede">En neuf, seules les offres vendues et expédiées par l'enseigne elle-même sont listées. En reconditionné, seules les offres avec au moins 12 mois de garantie et un prix nettement sous le neuf. Les vendeurs tiers hors de prix et les annonces entre particuliers sont écartés. Les prix bougent vite avant le Black Friday du 27 novembre : vérifiez la fiche avant de payer.</p>
   <div class="summary" id="summary"></div>
 </header>
 
 <div class="bar">
   <div class="wrap">
     <div class="chips" id="chips" role="group" aria-label="Type de PS5"></div>
+    <label class="ctrl" for="cond">État
+      <select id="cond">
+        <option value="neuf">Neuf</option>
+        <option value="recond">Reconditionné</option>
+        <option value="all">Neuf et reconditionné</option>
+      </select>
+    </label>
     <label class="ctrl" for="sort">Trier
       <select id="sort">
         <option value="asc">Prix croissant</option>
@@ -172,7 +180,8 @@ footer p { max-width: 70ch; }
     <h2>Critères de fiabilité</h2>
     <div class="rules">
       <div class="rule"><b>Vendu par l'enseigne</b>Amazon « expédié et vendu par Amazon », Fnac, Leclerc, etc. Aucun vendeur partenaire.</div>
-      <div class="rule"><b>Console neuve</b>Pas d'occasion ni de reconditionné, garantie constructeur de 2 ans.</div>
+      <div class="rule"><b>Console neuve</b>Garantie constructeur de 2 ans.</div>
+      <div class="rule"><b>Reconditionné</b>Vendu par une enseigne ou une plateforme qui contrôle ses vendeurs, au moins 12 mois de garantie, au moins 15 % sous le prix neuf. Pas d'annonce entre particuliers.</div>
       <div class="rule"><b>Prix cohérent</b>Au-dessus de 15 % du prix officiel Sony, l'annonce est écartée.</div>
       <div class="rule"><b>Livraison en France</b>Livraison à domicile ou retrait en magasin depuis un site .fr.</div>
     </div>
@@ -190,7 +199,7 @@ footer p { max-width: 70ch; }
 </main>
 
 <footer class="wrap">
-  <p>Prix officiels Sony France depuis le 2 avril 2026 : Digital 599,99 €, Standard (lecteur, 1 To) 649,99 €, Pro 899,99 €. Les liens ouvrent la page PS5 de chaque enseigne. Pour mettre la liste à jour, modifiez le tableau <code>OFFERS</code> en bas du fichier.</p>
+  <p>Prix officiels Sony France depuis le 2 avril 2026 : Digital 599,99 €, Standard (lecteur, 1 To) 649,99 €, Pro 899,99 €. Les liens ouvrent la page PS5 de chaque enseigne. En reconditionné, « dès » indique le prix d'entrée de la plateforme : l'état et le modèle varient selon l'annonce. Pour mettre la liste à jour, modifiez le tableau <code>OFFERS</code> en bas du fichier.</p>
 </footer>
 
 <script>
@@ -240,8 +249,21 @@ const OFFERS = [
   { shop: "Micromania", type: "pro", title: "PS5 Pro 2 To", price: 899.90, stock: "ok", date: "20/11",
     url: "https://www.micromania.fr/search?q=ps5%20pro" },
   { shop: "PlayStation Direct (Sony)", type: "pro", title: "PS5 Pro 2 To", price: 899.99, stock: "out", date: "17/11",
-    url: "https://direct.playstation.com/fr-fr/buy-consoles" }
+    url: "https://direct.playstation.com/fr-fr/buy-consoles" },
+
+  // Reconditionné
+  { cond: "recond", shop: "Back Market", type: "digital", title: "PS5 Digital reconditionnée", price: 390, from: true, stock: "ok", date: "22/11",
+    warranty: "12 mois min.", note: "Prix d'entrée, l'état et le modèle varient selon l'annonce.", url: "https://www.backmarket.fr/fr-fr/c/black-friday/ps5-black-friday" },
+  { cond: "recond", shop: "Boulanger", type: "digital", title: "PS5 Slim Digital reconditionnée", price: 431, stock: "unk", date: "nov.",
+    warranty: "2 ans", note: "Livraison offerte.", url: "https://www.boulanger.com/ref/1199104?offer=81853a92-1f50-4790-b86a-c9b33ec211b0" },
+  { cond: "recond", shop: "Back Market", type: "standard", title: "PS5 Standard (lecteur) reconditionnée", price: 480, from: true, stock: "ok", date: "22/11",
+    warranty: "12 mois min.", note: "Prix d'entrée, modèle original ou Slim selon l'annonce.", url: "https://www.backmarket.fr/fr-fr/c/black-friday/ps5-black-friday" },
+  { cond: "recond", shop: "Fnac", type: "standard", title: "PS5 Slim Standard reconditionnée, état parfait", price: 552.99, stock: "unk", date: "nov.",
+    warranty: "24 mois", note: "Bon plan ponctuel repéré sur Dealabs, peut être expiré.", url: "https://www.dealabs.com/bons-plans/console-reconditionne-etat-parfait-sony-ps5-slim-edition-standard-blanc-et-noir-3386899" },
+  { cond: "recond", shop: "Back Market", type: "pro", title: "PS5 Pro reconditionnée", price: 780, from: true, stock: "ok", date: "20/11",
+    warranty: "12 mois min.", note: "Prix d'entrée, l'état varie selon l'annonce.", url: "https://www.backmarket.fr/fr-fr/c/black-friday/ps5-black-friday" }
 ];
+OFFERS.forEach(o => { o.cond = o.cond || "neuf"; });
 
 const REJECTED = [
   { shop: "E.Leclerc (partenaires)", model: "PS5 Pro", price: 1959.99, why: "Vendeur tiers, plus du double du prix officiel." },
@@ -249,13 +271,16 @@ const REJECTED = [
   { shop: "Fnac (vendeur tiers)", model: "PS5 Standard", price: 979, why: "Vendeur tiers, +50 % sur le prix officiel." },
   { shop: "Darty (marketplace)", model: "PS5 Standard", price: 917.17, why: "Offres de vendeurs tiers uniquement." },
   { shop: "E.Leclerc (partenaire)", model: "PS5 Digital", price: 871.47, why: "Seule offre restante sur la fiche, vendeur tiers." },
-  { shop: "Back Market", model: "PS5 Pro reconditionnée", price: 780, why: "Reconditionné, pas une console neuve." }
+  { shop: "Fnac (vendeur tiers)", model: "PS5 Slim reconditionnée « Correct »", price: 1190, why: "Reconditionné plus cher que le neuf." },
+  { shop: "Cdiscount (marketplace)", model: "PS5 Slim reconditionnée", price: 599, why: "Vendeurs tiers, au niveau du prix neuf." },
+  { shop: "Leboncoin", model: "PS5 Digital d'occasion", price: 380, why: "Vente entre particuliers, sans garantie." }
 ];
 
+const inCond = o => state.cond === "all" || o.cond === state.cond;
 const fmt = n => n.toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
 const STOCK = { ok: ["ok", "En stock"], unk: ["warn", "Stock à vérifier"], out: ["bad", "Rupture"] };
 
-const state = { type: "all", sort: "asc", stockOnly: false };
+const state = { type: "all", sort: "asc", stockOnly: false, cond: "neuf" };
 try {
   const saved = JSON.parse(localStorage.getItem("ps5scan") || "{}");
   Object.assign(state, saved);
@@ -266,19 +291,20 @@ function diffLabel(o) {
   const ref = OFFICIAL[o.type];
   if (!ref) return "";
   const d = o.price - ref;
+  const ref2 = o.cond === "recond" ? " vs neuf officiel" : " vs officiel";
   if (Math.abs(d) < 1) return "Prix officiel";
-  return (d < 0 ? "−" : "+") + fmt(Math.abs(d)).replace(/\s?€/, " €") + " vs officiel";
+  return (d < 0 ? "−" : "+") + fmt(Math.abs(d)) + ref2;
 }
 
 function renderSummary() {
   const el = document.getElementById("summary");
   el.innerHTML = "";
   ["digital", "standard", "pro"].forEach(t => {
-    const best = OFFERS.filter(o => o.type === t && o.stock !== "out").sort((a, b) => a.price - b.price)[0];
+    const best = OFFERS.filter(o => o.type === t && o.stock !== "out" && inCond(o)).sort((a, b) => a.price - b.price)[0];
     if (!best) return;
     const d = document.createElement("div");
     d.className = "best";
-    d.innerHTML = `<span>${TYPE_LABEL[t]} dès</span><strong>${fmt(best.price)}</strong><em>${best.shop}</em>`;
+    d.innerHTML = `<span>${TYPE_LABEL[t]}${best.cond === "recond" ? " reconditionnée" : ""} dès</span><strong>${fmt(best.price)}</strong><em>${best.shop}</em>`;
     el.appendChild(d);
   });
 }
@@ -287,7 +313,8 @@ function renderChips() {
   const el = document.getElementById("chips");
   el.innerHTML = "";
   TYPES.forEach(t => {
-    const n = t.id === "all" ? OFFERS.length : OFFERS.filter(o => o.type === t.id).length;
+    const pool = OFFERS.filter(inCond);
+    const n = t.id === "all" ? pool.length : pool.filter(o => o.type === t.id).length;
     const b = document.createElement("button");
     b.type = "button"; b.className = "chip"; b.id = "chip-" + t.id;
     b.setAttribute("aria-pressed", String(state.type === t.id));
@@ -298,7 +325,7 @@ function renderChips() {
 }
 
 function renderList() {
-  let rows = OFFERS.filter(o => state.type === "all" || o.type === state.type);
+  let rows = OFFERS.filter(o => inCond(o) && (state.type === "all" || o.type === state.type));
   if (state.stockOnly) rows = rows.filter(o => o.stock === "ok");
   rows.sort((a, b) => state.sort === "asc" ? a.price - b.price : b.price - a.price);
 
@@ -308,7 +335,7 @@ function renderList() {
   const list = document.getElementById("list");
   list.innerHTML = "";
   if (!rows.length) {
-    list.innerHTML = `<div class="empty">Aucune offre en stock confirmé pour ce type. Décochez « En stock confirmé uniquement » pour voir les offres à vérifier.</div>`;
+    list.innerHTML = `<div class="empty">Aucune offre pour ce filtre. Changez le type ou l'état, ou décochez « En stock confirmé uniquement ».</div>`;
     return;
   }
   rows.forEach((o, i) => {
@@ -322,13 +349,14 @@ function renderList() {
         <div class="meta">
           <span>${o.shop}</span>
           <span class="pill ${cls}">${txt}</span>
+          ${o.warranty ? `<span>Garantie ${o.warranty}</span>` : ""}
           <span>relevé le ${o.date}</span>
         </div>
         ${o.note ? `<div class="note">${o.note}</div>` : ""}
-        <span class="type">${TYPE_LABEL[o.type]}</span>
+        <span class="type">${TYPE_LABEL[o.type]}</span>${o.cond === "recond" ? `<span class="type cond">Reconditionné</span>` : ""}
       </div>
       <div class="right">
-        <div class="price">${fmt(o.price)}</div>
+        <div class="price">${o.from ? '<small style="font-size:13px;font-weight:500">dès </small>' : ""}${fmt(o.price)}</div>
         <div class="meta" style="margin:0">${diffLabel(o)}</div>
         <a class="go" href="${o.url}" target="_blank" rel="noopener noreferrer">Voir l'offre ↗</a>
       </div>`;
@@ -343,16 +371,18 @@ function renderRejected() {
 }
 
 function render() {
+  renderSummary();
   renderChips();
   renderList();
   document.getElementById("sort").value = state.sort;
   document.getElementById("stock").checked = state.stockOnly;
+  document.getElementById("cond").value = state.cond;
 }
 
 document.getElementById("sort").addEventListener("change", e => { state.sort = e.target.value; save(); renderList(); });
+document.getElementById("cond").addEventListener("change", e => { state.cond = e.target.value; save(); render(); });
 document.getElementById("stock").addEventListener("change", e => { state.stockOnly = e.target.checked; save(); renderList(); });
 
-renderSummary();
 renderRejected();
 render();
 </script>
