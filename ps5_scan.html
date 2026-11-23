@@ -118,6 +118,19 @@ h2 { font: 700 18px/1.2 var(--font-display); margin: 0 0 12px; }
   border: 1px solid var(--accent); border-radius: 8px; padding: 6px 10px; white-space: nowrap;
 }
 .go:hover { background: var(--accent-soft); }
+.refresh {
+  font: 600 13px var(--font-body); padding: 8px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--surface);
+  display: inline-flex; align-items: center; gap: 8px; margin-left: auto;
+}
+.refresh:disabled { opacity: .55; cursor: progress; }
+.refresh .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; display: none; }
+.refresh.busy .spin { display: inline-block; }
+@media (prefers-reduced-motion: no-preference) { .refresh.busy .spin { animation: rot .8s linear infinite; } }
+@keyframes rot { to { transform: rotate(360deg); } }
+.status { font-size: 13px; color: var(--muted); flex-basis: 100%; }
+.status.err { color: var(--bad); }
+.status:empty { display: none; }
 .empty { padding: 24px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
 
 .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
@@ -144,7 +157,7 @@ footer p { max-width: 70ch; }
 </style>
 
 <header class="wrap">
-  <div class="eyebrow">Neuf et reconditionné · Livraison France · Relevé du 18 au 22 nov. 2026</div>
+  <div class="eyebrow">Neuf et reconditionné · Livraison France · <span id="period">Relevé du 18 au 22 nov. 2026</span></div>
   <h1>Où acheter une PS5 au meilleur prix</h1>
   <p class="lede">En neuf, seules les offres vendues et expédiées par l'enseigne elle-même sont listées. En reconditionné, seules les offres avec au moins 12 mois de garantie et un prix nettement sous le neuf. Les vendeurs tiers hors de prix et les annonces entre particuliers sont écartés. Les prix bougent vite avant le Black Friday du 27 novembre : vérifiez la fiche avant de payer.</p>
   <div class="summary" id="summary"></div>
@@ -167,6 +180,8 @@ footer p { max-width: 70ch; }
       </select>
     </label>
     <label class="ctrl" for="stock"><input type="checkbox" id="stock"> En stock confirmé uniquement</label>
+    <button type="button" class="refresh" id="refresh" hidden><span class="spin" aria-hidden="true"></span><span id="refresh-label">Actualiser les prix</span></button>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
   </div>
 </div>
 
@@ -214,7 +229,7 @@ const TYPES = [
 const TYPE_LABEL = { digital: "PS5 Digital", standard: "PS5 Standard", pro: "PS5 Pro", pack: "Pack" };
 
 // stock : "ok" = en stock confirmé, "unk" = non confirmé, "out" = rupture
-const OFFERS = [
+let OFFERS = [
   { shop: "Cultura", type: "digital", title: "PS5 Slim Digital 825 Go", price: 449.99, stock: "unk", date: "20/11",
     note: "Prix très bas relevé par un comparateur, à confirmer sur le site.", url: "https://www.cultura.com/search/results?search_query=ps5%20digital" },
   { shop: "Carrefour", type: "digital", title: "PS5 Slim Digital 825 Go", price: 599.00, stock: "unk", date: "20/11",
@@ -264,8 +279,10 @@ const OFFERS = [
     warranty: "12 mois min.", note: "Prix d'entrée, l'état varie selon l'annonce.", url: "https://www.backmarket.fr/fr-fr/c/black-friday/ps5-black-friday" }
 ];
 OFFERS.forEach(o => { o.cond = o.cond || "neuf"; });
+const TRIGGER_ID = "trig_01WhBiiGjGVyCEHV3kWExejC";
+const MCP_SERVER = "Claude Code Remote";
 
-const REJECTED = [
+let REJECTED = [
   { shop: "E.Leclerc (partenaires)", model: "PS5 Pro", price: 1959.99, why: "Vendeur tiers, plus du double du prix officiel." },
   { shop: "Boulanger (marketplace)", model: "PS5 Pro", price: null, priceText: "≈ 2× officiel", why: "Vendeurs tiers à près de deux fois le prix officiel." },
   { shop: "Fnac (vendeur tiers)", model: "PS5 Standard", price: 979, why: "Vendeur tiers, +50 % sur le prix officiel." },
@@ -277,6 +294,8 @@ const REJECTED = [
 ];
 
 const inCond = o => state.cond === "all" || o.cond === state.cond;
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const safeUrl = u => (typeof u === "string" && u.startsWith("https://")) ? u : "#";
 const fmt = n => n.toLocaleString("fr-FR", { style: "currency", currency: "EUR" });
 const STOCK = { ok: ["ok", "En stock"], unk: ["warn", "Stock à vérifier"], out: ["bad", "Rupture"] };
 
@@ -304,7 +323,7 @@ function renderSummary() {
     if (!best) return;
     const d = document.createElement("div");
     d.className = "best";
-    d.innerHTML = `<span>${TYPE_LABEL[t]}${best.cond === "recond" ? " reconditionnée" : ""} dès</span><strong>${fmt(best.price)}</strong><em>${best.shop}</em>`;
+    d.innerHTML = `<span>${TYPE_LABEL[t]}${best.cond === "recond" ? " reconditionnée" : ""} dès</span><strong>${fmt(best.price)}</strong><em>${esc(best.shop)}</em>`;
     el.appendChild(d);
   });
 }
@@ -339,26 +358,26 @@ function renderList() {
     return;
   }
   rows.forEach((o, i) => {
-    const [cls, txt] = STOCK[o.stock];
+    const [cls, txt] = STOCK[o.stock] || STOCK.unk;
     const art = document.createElement("article");
     art.className = "offer";
     art.innerHTML = `
       <div class="rank">#${i + 1}</div>
       <div style="min-width:0">
-        <p class="title">${o.title}</p>
+        <p class="title">${esc(o.title)}</p>
         <div class="meta">
-          <span>${o.shop}</span>
+          <span>${esc(o.shop)}</span>
           <span class="pill ${cls}">${txt}</span>
-          ${o.warranty ? `<span>Garantie ${o.warranty}</span>` : ""}
-          <span>relevé le ${o.date}</span>
+          ${o.warranty ? `<span>Garantie ${esc(o.warranty)}</span>` : ""}
+          <span>relevé le ${esc(o.date)}</span>
         </div>
-        ${o.note ? `<div class="note">${o.note}</div>` : ""}
-        <span class="type">${TYPE_LABEL[o.type]}</span>${o.cond === "recond" ? `<span class="type cond">Reconditionné</span>` : ""}
+        ${o.note ? `<div class="note">${esc(o.note)}</div>` : ""}
+        <span class="type">${TYPE_LABEL[o.type] || "PS5"}</span>${o.cond === "recond" ? `<span class="type cond">Reconditionné</span>` : ""}
       </div>
       <div class="right">
         <div class="price">${o.from ? '<small style="font-size:13px;font-weight:500">dès </small>' : ""}${fmt(o.price)}</div>
         <div class="meta" style="margin:0">${diffLabel(o)}</div>
-        <a class="go" href="${o.url}" target="_blank" rel="noopener noreferrer">Voir l'offre ↗</a>
+        <a class="go" href="${esc(safeUrl(o.url))}" target="_blank" rel="noopener noreferrer">Voir l'offre ↗</a>
       </div>`;
     list.appendChild(art);
   });
@@ -366,7 +385,7 @@ function renderList() {
 
 function renderRejected() {
   document.getElementById("rejected").innerHTML = REJECTED.map(r =>
-    `<tr><td>${r.shop}</td><td>${r.model}</td><td class="num">${r.price == null ? r.priceText : fmt(r.price)}</td><td>${r.why}</td></tr>`
+    `<tr><td>${esc(r.shop)}</td><td>${esc(r.model)}</td><td class="num">${typeof r.price === "number" ? fmt(r.price) : esc(r.priceText || "—")}</td><td>${esc(r.why)}</td></tr>`
   ).join("");
 }
 
@@ -385,4 +404,76 @@ document.getElementById("stock").addEventListener("change", e => { state.stockOn
 
 renderRejected();
 render();
+
+// ---- Actualisation : une tâche Claude refait les recherches et écrit dans la base de l'artifact ----
+const $status = document.getElementById("status");
+const $btn = document.getElementById("refresh");
+const $label = document.getElementById("refresh-label");
+let running = false, lastUpdated = null;
+
+function setStatus(text, isErr) { $status.textContent = text || ""; $status.classList.toggle("err", !!isErr); }
+function setBusy(b) {
+  running = b; $btn.disabled = b; $btn.classList.toggle("busy", b);
+  $label.textContent = b ? "Recherche en cours…" : "Actualiser les prix";
+}
+const when = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" }); };
+
+function applyScan(data) {
+  if (!data || !Array.isArray(data.offers) || !data.offers.length) return;
+  OFFERS = data.offers.filter(o => o && typeof o.price === "number").map(o => ({ ...o, cond: o.cond === "recond" ? "recond" : "neuf" }));
+  if (Array.isArray(data.rejected)) REJECTED = data.rejected.filter(Boolean);
+  lastUpdated = data.updatedAt || null;
+  document.getElementById("period").textContent = data.period || ("Relevé du " + when(data.updatedAt));
+  renderRejected(); render();
+}
+
+function applyStatus(st) {
+  if (!st) return;
+  if (st.state === "running") {
+    setBusy(true);
+    setStatus("Claude refait les recherches sur les sites des enseignes. Comptez 5 à 15 minutes, la liste se met à jour toute seule.");
+  } else if (st.state === "done") {
+    setBusy(false);
+    setStatus(lastUpdated ? "Prix mis à jour le " + when(lastUpdated) + "." : "");
+  } else if (st.state === "error") {
+    setBusy(false);
+    setStatus("La dernière recherche a échoué : " + (st.message || "raison inconnue") + ". Réessayez plus tard.", true);
+  }
+}
+
+(async () => {
+  if (!window.claude?.use) return;
+  const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+  if (db) {
+    db.doc("scan/latest").onSnapshot(s => { if (s.exists) applyScan(s.data()); }, () => {});
+    db.doc("scan/status").onSnapshot(s => { if (s.exists) applyStatus(s.data()); }, () => {});
+  }
+  const isOwner = (await user?.isOwner()) ?? false;
+  if (!isOwner) return;
+  $btn.hidden = false;
+  $btn.addEventListener("click", async () => {
+    if (running) return;
+    const mcp = await claude.use("mcp");
+    if (!mcp) { setStatus("L'actualisation n'est pas disponible dans cette vue. Ouvrez la page sur claude.ai.", true); return; }
+    setBusy(true);
+    setStatus("Lancement de la recherche…");
+    try {
+      await mcp.callTool(MCP_SERVER, "fire_trigger", { trigger_id: TRIGGER_ID });
+      if (db) { try { await db.doc("scan/status").set({ state: "running", startedAt: new Date().toISOString() }); } catch (e) {} }
+      applyStatus({ state: "running" });
+    } catch (e) {
+      setBusy(false);
+      const msgs = {
+        needs_reauth: "Reconnectez Claude Code Remote dans claude.ai, Paramètres, Connecteurs.",
+        server_not_connected: "Ajoutez le connecteur Claude Code Remote dans claude.ai, Paramètres, Connecteurs.",
+        not_in_manifest: "Vous avez refusé l'accès au connecteur pour cette page. Autorisez-le dans le menu Permissions de l'artifact.",
+        approval_required: "Le lancement demande votre accord. Cliquez à nouveau et acceptez la demande.",
+        blocked_by_policy: "Votre organisation bloque le lancement des tâches depuis une page.",
+        server_unavailable: "Le service ne répond pas. La recherche a peut-être démarré : attendez quelques minutes avant de réessayer.",
+        tool_error: "La tâche n'a pas pu démarrer : " + (e?.message || "") ,
+      };
+      setStatus(msgs[e?.code] || ("Échec du lancement (" + (e?.code || "erreur") + ")."), true);
+    }
+  });
+})();
 </script>
